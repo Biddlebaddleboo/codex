@@ -12,7 +12,6 @@ use serde::Serialize;
 use strum::IntoEnumIterator;
 use strum_macros::Display;
 use strum_macros::EnumIter;
-// use tracing::warn;
 use ts_rs::TS;
 
 use crate::config_types::Personality;

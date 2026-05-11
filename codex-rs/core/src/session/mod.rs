@@ -512,10 +512,9 @@ impl Codex {
             .get_default_model(&config.model, refresh_strategy)
             .await;
 
-        // Resolve base instructions for the session. Priority order:
-        // 1. config.base_instructions override
-        // 2. conversation history => session_meta.base_instructions
-        // 3. base_instructions for current model
+        // Use local base instructions default. Remote/cached/history/config overrides are disabled.
+        // Priority order (forced to local default):
+        // 1. Local compact default (BASE_INSTRUCTIONS_DEFAULT)
         let model_info = models_manager
             .get_model_info(model.as_str(), &config.to_models_manager_config())
             .await;

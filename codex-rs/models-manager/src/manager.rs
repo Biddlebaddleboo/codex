@@ -238,11 +238,23 @@ impl ModelsManager for OpenAiModelsManager {
     }
 
     async fn get_remote_models(&self) -> Vec<ModelInfo> {
-        self.remote_models.read().await.clone()
+        self.remote_models
+            .read()
+            .await
+            .iter()
+            .cloned()
+            .map(|m| m.normalize())
+            .collect()
     }
 
     fn try_get_remote_models(&self) -> Result<Vec<ModelInfo>, TryLockError> {
-        Ok(self.remote_models.try_read()?.clone())
+        Ok(self
+            .remote_models
+            .try_read()?
+            .iter()
+            .cloned()
+            .map(|m| m.normalize())
+            .collect())
     }
 
     fn auth_manager(&self) -> Option<&AuthManager> {
@@ -373,11 +385,20 @@ impl ModelsManager for StaticModelsManager {
     }
 
     async fn get_remote_models(&self) -> Vec<ModelInfo> {
-        self.remote_models.clone()
+        self.remote_models
+            .iter()
+            .cloned()
+            .map(|m| m.normalize())
+            .collect()
     }
 
     fn try_get_remote_models(&self) -> Result<Vec<ModelInfo>, TryLockError> {
-        Ok(self.remote_models.clone())
+        Ok(self
+            .remote_models
+            .iter()
+            .cloned()
+            .map(|m| m.normalize())
+            .collect())
     }
 
     fn auth_manager(&self) -> Option<&AuthManager> {

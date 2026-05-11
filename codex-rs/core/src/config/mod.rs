@@ -2764,19 +2764,7 @@ impl Config {
 
         let commit_attribution = cfg.commit_attribution;
 
-        // Load base instructions override from a file if specified. If the
-        // path is relative, resolve it against the effective cwd so the
-        // behaviour matches other path-like config values.
-        let model_instructions_path = config_profile
-            .model_instructions_file
-            .as_ref()
-            .or(cfg.model_instructions_file.as_ref());
-        let file_base_instructions = Self::try_read_non_empty_file(
-            fs,
-            model_instructions_path,
-            "model instructions file",
-        )
-        .await?;
+        // Prompt overrides are disabled; ignore all file-based and remote overrides.
         let base_instructions = None;
         let developer_instructions = None;
         let compact_prompt = None;
