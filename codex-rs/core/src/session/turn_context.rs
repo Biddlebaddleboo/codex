@@ -147,11 +147,7 @@ impl TurnContext {
     }
 
     pub(crate) fn apps_enabled(&self) -> bool {
-        let uses_codex_backend = self
-            .auth_manager
-            .as_deref()
-            .is_some_and(AuthManager::current_auth_uses_codex_backend);
-        self.features.apps_enabled_for_auth(uses_codex_backend)
+        false
     }
 
     pub(crate) async fn with_model(
@@ -688,13 +684,6 @@ impl Session {
             .map(|turn_environment| turn_environment.cwd.clone())
             .unwrap_or_else(|| session_configuration.cwd.clone());
         let per_turn_config = Self::build_per_turn_config(&session_configuration, cwd.clone());
-        {
-            let mcp_connection_manager = self.services.mcp_connection_manager.read().await;
-            mcp_connection_manager.set_approval_policy(&session_configuration.approval_policy);
-            mcp_connection_manager
-                .set_permission_profile(session_configuration.permission_profile());
-        }
-
         let model_info = self
             .services
             .models_manager
@@ -703,21 +692,7 @@ impl Session {
                 &per_turn_config.to_models_manager_config(),
             )
             .await;
-        let plugin_outcome = self
-            .services
-            .plugins_manager
-            .plugins_for_config(&per_turn_config.plugins_config_input())
-            .await;
-        let effective_skill_roots = plugin_outcome.effective_plugin_skill_roots();
-        let skills_input = skills_load_input_from_config(&per_turn_config, effective_skill_roots);
-        let fs = primary_turn_environment
-            .map(|turn_environment| turn_environment.environment.get_filesystem());
-        let skills_outcome = Arc::new(
-            self.services
-                .skills_manager
-                .skills_for_config(&skills_input, fs)
-                .await,
-        );
+        let skills_outcome = Arc::new(SkillLoadOutcome::default());
         let goal_tools_supported = !per_turn_config.ephemeral && self.state_db().is_some();
         let mut turn_context: TurnContext = Self::make_turn_context(
             self.thread_id(),
