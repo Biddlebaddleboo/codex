@@ -591,6 +591,9 @@ pub fn build_tool_registry_builder(
 
     let mut dynamic_tool_specs = Vec::new();
     for tool in params.dynamic_tools {
+        if tool.name == "automation_update" {
+            continue;
+        }
         match dynamic_tool_to_loadable_tool_spec(tool) {
             Ok(loadable_tool) => {
                 let handler_name = ToolName::new(tool.namespace.clone(), tool.name.clone());

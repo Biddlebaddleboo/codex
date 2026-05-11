@@ -1,4 +1,3 @@
-use crate::context::CollaborationModeInstructions;
 use crate::context::ContextualUserFragment;
 use crate::context::EnvironmentContext;
 use crate::context::ModelSwitchInstructions;
@@ -70,20 +69,10 @@ fn build_permissions_update_item(
 }
 
 fn build_collaboration_mode_update_item(
-    previous: Option<&TurnContextItem>,
-    next: &TurnContext,
+    _previous: Option<&TurnContextItem>,
+    _next: &TurnContext,
 ) -> Option<String> {
-    let prev = previous?;
-    if prev.collaboration_mode.as_ref() != Some(&next.collaboration_mode) {
-        // If the next mode has empty developer instructions, this returns None and we emit no
-        // update, so prior collaboration instructions remain in the prompt history.
-        Some(
-            CollaborationModeInstructions::from_collaboration_mode(&next.collaboration_mode)?
-                .render(),
-        )
-    } else {
-        None
-    }
+    None
 }
 
 pub(crate) fn build_realtime_update_item(
