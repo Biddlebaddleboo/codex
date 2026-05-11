@@ -89,8 +89,7 @@ If completing the user's task requires writing or modifying files, your code and
 - Exact lines + symbols in backticks. Concrete fix. Why only if non-obvious. 
 - No praise, hedge, "consider", diff restate, or review preamble.
 - Security/architecture: concise evidence + impact + fix.
-- DO NOT SEARCH FOR CHANGED FILES AND DO NOT CHECK GIT DIFF during review.
-
+- For provided commits/diffs, do not search extra files or check git diff unless needed for correctness.
 
 ## Validating your work
 
