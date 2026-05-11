@@ -178,7 +178,8 @@ impl SessionConfiguration {
                         )
                 });
         if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
-            next_configuration.collaboration_mode = collaboration_mode;
+            next_configuration.collaboration_mode =
+                sanitize_collaboration_mode_for_prompt(collaboration_mode);
         }
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = Some(summary);

@@ -186,7 +186,7 @@ impl TurnContext {
         let collaboration_mode = self.collaboration_mode.with_updates(
             Some(model.clone()),
             Some(reasoning_effort),
-            /*developer_instructions*/ None,
+            Some(None),
         );
         let features = self.features.clone();
         let provider_capabilities = self.provider.capabilities();
@@ -354,7 +354,9 @@ impl TurnContext {
             file_system_sandbox_policy: self.non_legacy_file_system_sandbox_policy(),
             model: self.model_info.slug.clone(),
             personality: self.personality,
-            collaboration_mode: Some(self.collaboration_mode.clone()),
+            collaboration_mode: Some(sanitize_collaboration_mode_for_prompt(
+                self.collaboration_mode.clone(),
+            )),
             realtime_active: Some(self.realtime_active),
             effort: self.reasoning_effort,
             summary: self.reasoning_summary,
@@ -550,7 +552,9 @@ impl Session {
             developer_instructions: session_configuration.developer_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),
             user_instructions: session_configuration.user_instructions.clone(),
-            collaboration_mode: session_configuration.collaboration_mode.clone(),
+            collaboration_mode: sanitize_collaboration_mode_for_prompt(
+                session_configuration.collaboration_mode.clone(),
+            ),
             personality: session_configuration.personality,
             approval_policy: session_configuration.approval_policy.clone(),
             permission_profile: session_configuration.permission_profile(),

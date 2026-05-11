@@ -207,6 +207,20 @@ use self::turn_context::TurnSkillsContext;
 #[cfg(test)]
 mod rollout_reconstruction_tests;
 
+pub(crate) fn sanitize_dynamic_tools(tools: Vec<DynamicToolSpec>) -> Vec<DynamicToolSpec> {
+    tools
+        .into_iter()
+        .filter(|tool| tool.name != "automation_update")
+        .collect()
+}
+
+pub(crate) fn sanitize_collaboration_mode_for_prompt(
+    mut mode: CollaborationMode,
+) -> CollaborationMode {
+    mode.settings.developer_instructions = None;
+    mode
+}
+
 #[derive(Debug, PartialEq)]
 pub enum SteerInputError {
     NoActiveTurn(Vec<UserInput>),
@@ -541,6 +555,7 @@ impl Codex {
                     };
                     state_db::get_dynamic_tools(state_db_ctx.as_deref(), thread_id, "codex_spawn")
                         .await
+                        .map(sanitize_dynamic_tools)
                 }
                 None => None,
             }
@@ -549,10 +564,14 @@ impl Codex {
         };
         let dynamic_tools = if dynamic_tools.is_empty() {
             persisted_tools
-                .or_else(|| conversation_history.get_dynamic_tools())
+                .or_else(|| {
+                    conversation_history
+                        .get_dynamic_tools()
+                        .map(sanitize_dynamic_tools)
+                })
                 .unwrap_or_default()
         } else {
-            dynamic_tools
+            sanitize_dynamic_tools(dynamic_tools)
         };
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
