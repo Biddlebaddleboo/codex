@@ -264,6 +264,11 @@ impl RealtimeConversationManager {
     }
 
     async fn start(&self, start: RealtimeStart) -> CodexResult<RealtimeStartOutput> {
+        if REALTIME_CONVERSATION_DISABLED_IN_FORK {
+            return Err(CodexErr::InvalidRequest(
+                "realtime conversation disabled in this fork".to_string(),
+            ));
+        }
         let previous_state = {
             let mut guard = self.state.lock().await;
             guard.take()
@@ -562,11 +567,27 @@ async fn stop_conversation_state(
     }
 }
 
+pub(crate) const REALTIME_CONVERSATION_DISABLED_IN_FORK: bool = true;
+
 pub(crate) async fn handle_start(
     sess: &Arc<Session>,
     sub_id: String,
     params: ConversationStartParams,
 ) -> CodexResult<()> {
+    if REALTIME_CONVERSATION_DISABLED_IN_FORK {
+        info!("realtime conversation disabled in this fork");
+        let message = "realtime conversation disabled in this fork".to_string();
+        sess.send_event_raw(Event {
+            id: sub_id.clone(),
+            msg: EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+                payload: RealtimeEvent::Error(message),
+            }),
+        })
+        .await;
+        send_realtime_conversation_closed(sess, sub_id, RealtimeConversationEnd::Requested).await;
+        return Ok(());
+    }
+
     let prepared_start = match prepare_realtime_start(sess, params).await {
         Ok(prepared_start) => prepared_start,
         Err(err) => {
@@ -890,6 +911,9 @@ pub(crate) async fn handle_audio(
     sub_id: String,
     params: ConversationAudioParams,
 ) {
+    if REALTIME_CONVERSATION_DISABLED_IN_FORK {
+        return;
+    }
     if let Err(err) = sess.conversation.audio_in(params.frame).await {
         error!("failed to append realtime audio: {err}");
         if sess.conversation.running_state().await.is_some() {
@@ -997,6 +1021,9 @@ pub(crate) async fn handle_text(
     sub_id: String,
     params: ConversationTextParams,
 ) {
+    if REALTIME_CONVERSATION_DISABLED_IN_FORK {
+        return;
+    }
     debug!(text = %params.text, "[realtime-text] appending realtime conversation text input");
     if let Err(err) = sess.conversation.text_in(params.text).await {
         error!("failed to append realtime text: {err}");
@@ -1010,6 +1037,9 @@ pub(crate) async fn handle_text(
 }
 
 pub(crate) async fn handle_close(sess: &Arc<Session>, sub_id: String) {
+    if REALTIME_CONVERSATION_DISABLED_IN_FORK {
+        return;
+    }
     end_realtime_conversation(sess, sub_id, RealtimeConversationEnd::Requested).await;
 }
 

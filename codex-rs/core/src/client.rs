@@ -737,14 +737,7 @@ impl ModelClient {
     ///
     /// WebSocket use is controlled by provider capability and session-scoped fallback state.
     pub fn responses_websocket_enabled(&self) -> bool {
-        if !self.state.provider.info().supports_websockets
-            || self.state.disable_websockets.load(Ordering::Relaxed)
-            || (*CODEX_RS_SSE_FIXTURE).is_some()
-        {
-            return false;
-        }
-
-        true
+        false
     }
 
     /// Returns auth + provider configuration resolved from the current session auth state.
