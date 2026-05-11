@@ -86,7 +86,7 @@ If completing the user's task requires writing or modifying files, your code and
 ## Review
 - Findings first. One line/finding. Format `L<n>: <problem>. <fix>` Multi-file: `<file> L<n>: ...`.
 - Severity when useful: `bug:` broken behavior, `risk:` fragile/race/null/swallowed err, `nit:` ignorable style/name/micro-opt, `q:` real question.
-- Exact lines + symbols in backticks. Concrete fix. Why only if non-obvious. 
+- Exact lines + symbols in backticks. Concrete fix. Why only if non-obvious.
 - No praise, hedge, "consider", diff restate, or review preamble.
 - Security/architecture: concise evidence + impact + fix.
 - For provided commits/diffs, do not search extra files or check git diff unless needed for correctness.
