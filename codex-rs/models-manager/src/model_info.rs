@@ -13,7 +13,7 @@ use crate::config::ModelsManagerConfig;
 use codex_utils_output_truncation::approx_bytes_for_tokens;
 use tracing::warn;
 
-pub const BASE_INSTRUCTIONS: &str = include_str!("../prompt.md");
+pub const BASE_INSTRUCTIONS: &str = codex_protocol::models::BASE_INSTRUCTIONS_DEFAULT;
 const DEFAULT_PERSONALITY_HEADER: &str = "You are Codex, a coding agent based on GPT-5. You and the user share the same workspace and collaborate to achieve the user's goals.";
 const LOCAL_FRIENDLY_TEMPLATE: &str =
     "You optimize for team morale and being a supportive teammate as much as code quality.";
@@ -52,14 +52,8 @@ pub fn with_config_overrides(mut model: ModelInfo, config: &ModelsManagerConfig)
         };
     }
 
-    if let Some(base_instructions) = &config.base_instructions {
-        model.base_instructions = base_instructions.clone();
-        model.model_messages = None;
-    } else if !config.personality_enabled {
-        model.model_messages = None;
-    }
-
-    model
+    // Force base_instructions to local compact default and ignore all remote/config overrides.
+    model.normalize()
 }
 
 /// Build a minimal fallback model descriptor for missing/unknown slugs.

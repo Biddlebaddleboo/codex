@@ -12,7 +12,7 @@ use serde::Serialize;
 use strum::IntoEnumIterator;
 use strum_macros::Display;
 use strum_macros::EnumIter;
-use tracing::warn;
+// use tracing::warn;
 use ts_rs::TS;
 
 use crate::config_types::Personality;
@@ -338,25 +338,14 @@ impl ModelInfo {
             .is_some_and(ModelMessages::supports_personality)
     }
 
-    pub fn get_model_instructions(&self, personality: Option<Personality>) -> String {
-        if let Some(model_messages) = &self.model_messages
-            && let Some(template) = &model_messages.instructions_template
-        {
-            // if we have a template, always use it
-            let personality_message = model_messages
-                .get_personality_message(personality)
-                .unwrap_or_default();
-            template.replace(PERSONALITY_PLACEHOLDER, personality_message.as_str())
-        } else if let Some(personality) = personality {
-            warn!(
-                model = %self.slug,
-                %personality,
-                "Model personality requested but model_messages is missing, falling back to base instructions."
-            );
-            self.base_instructions.clone()
-        } else {
-            self.base_instructions.clone()
-        }
+    pub fn normalize(mut self) -> Self {
+        self.base_instructions = crate::models::BASE_INSTRUCTIONS_DEFAULT.to_string();
+        self.model_messages = None;
+        self
+    }
+
+    pub fn get_model_instructions(&self, _personality: Option<Personality>) -> String {
+        crate::models::BASE_INSTRUCTIONS_DEFAULT.to_string()
     }
 }
 

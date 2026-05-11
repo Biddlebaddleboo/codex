@@ -2777,10 +2777,13 @@ impl Config {
             "model instructions file",
         )
         .await?;
-        let base_instructions = base_instructions
-            .or(file_base_instructions)
-            .or(cfg.instructions.clone());
-        let developer_instructions = developer_instructions.or(cfg.developer_instructions);
+        let base_instructions = None;
+        let developer_instructions = None;
+        let compact_prompt = None;
+        let personality = None;
+        let user_instructions = AgentsMdManager::load_global_instructions(Some(&codex_home))
+            .map(|l| l.contents);
+
         let include_permissions_instructions = config_profile
             .include_permissions_instructions
             .or(cfg.include_permissions_instructions)
@@ -2807,26 +2810,7 @@ impl Config {
                             auto_review.policy.as_deref(),
                         ))
                 });
-        let personality = personality
-            .or(config_profile.personality)
-            .or(cfg.personality)
-            .or_else(|| {
-                features
-                    .enabled(Feature::Personality)
-                    .then_some(Personality::Pragmatic)
-            });
 
-        let experimental_compact_prompt_path = config_profile
-            .experimental_compact_prompt_file
-            .as_ref()
-            .or(cfg.experimental_compact_prompt_file.as_ref());
-        let file_compact_prompt = Self::try_read_non_empty_file(
-            fs,
-            experimental_compact_prompt_path,
-            "experimental compact prompt file",
-        )
-        .await?;
-        let compact_prompt = compact_prompt.or(file_compact_prompt);
         let zsh_path = zsh_path_override
             .or(config_profile.zsh_path.map(Into::into))
             .or(cfg.zsh_path.map(Into::into));

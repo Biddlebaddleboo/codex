@@ -124,38 +124,18 @@ pub(crate) fn build_initial_realtime_item(
 }
 
 fn build_personality_update_item(
-    previous: Option<&TurnContextItem>,
-    next: &TurnContext,
-    personality_feature_enabled: bool,
+    _previous: Option<&TurnContextItem>,
+    _next: &TurnContext,
+    _personality_feature_enabled: bool,
 ) -> Option<String> {
-    if !personality_feature_enabled {
-        return None;
-    }
-    let previous = previous?;
-    if next.model_info.slug != previous.model {
-        return None;
-    }
-
-    if let Some(personality) = next.personality
-        && next.personality != previous.personality
-    {
-        let model_info = &next.model_info;
-        let personality_message = personality_message_for(model_info, personality);
-        personality_message.map(|message| PersonalitySpecInstructions::new(message).render())
-    } else {
-        None
-    }
+    None
 }
 
 pub(crate) fn personality_message_for(
-    model_info: &ModelInfo,
-    personality: Personality,
+    _model_info: &ModelInfo,
+    _personality: Personality,
 ) -> Option<String> {
-    model_info
-        .model_messages
-        .as_ref()
-        .and_then(|spec| spec.get_personality_message(Some(personality)))
-        .filter(|message| !message.is_empty())
+    None
 }
 
 pub(crate) fn build_model_instructions_update_item(

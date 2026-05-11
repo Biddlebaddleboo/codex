@@ -193,8 +193,8 @@ impl SessionConfiguration {
                     })
             });
         }
-        if let Some(personality) = updates.personality {
-            next_configuration.personality = Some(personality);
+        if updates.personality.is_some() {
+            next_configuration.personality = Some(Personality::None);
         }
         if let Some(approval_policy) = updates.approval_policy {
             next_configuration.approval_policy.set(approval_policy)?;
