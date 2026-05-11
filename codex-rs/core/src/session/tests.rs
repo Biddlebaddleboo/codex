@@ -5649,6 +5649,32 @@ async fn refresh_mcp_servers_is_deferred_until_next_turn() {
 }
 
 #[tokio::test]
+async fn refresh_mcp_servers_emits_disabled_warning() {
+    let (session, _turn_context, rx) = make_session_and_context_with_rx().await;
+    let mcp_oauth_credentials_store_mode =
+        serde_json::to_value(OAuthCredentialsStoreMode::Auto).expect("serialize store mode");
+    let refresh_config = McpServerRefreshConfig {
+        mcp_servers: json!({}),
+        mcp_oauth_credentials_store_mode,
+    };
+
+    crate::session::handlers::refresh_mcp_servers(
+        &session,
+        "refresh-mcp".to_string(),
+        refresh_config,
+    )
+    .await;
+
+    let event = rx.recv().await.expect("warning event");
+    assert_eq!(event.id, "refresh-mcp");
+    assert!(matches!(
+        event.msg,
+        EventMsg::Warning(WarningEvent { ref message })
+            if message == "MCP is disabled in this build; refresh request ignored"
+    ));
+}
+
+#[tokio::test]
 async fn record_model_warning_appends_user_message() {
     let (mut session, turn_context) = make_session_and_context().await;
     let features = Features::with_defaults().into();

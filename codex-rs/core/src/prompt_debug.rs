@@ -98,3 +98,30 @@ pub(crate) async fn build_prompt_input_from_session(
 
     Ok(prompt.get_formatted_input())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::tests::make_session_and_context;
+
+    #[tokio::test]
+    async fn prompt_input_omits_skills_apps_plugins_and_mcp_context() {
+        let (session, _) = make_session_and_context().await;
+        let prompt_input = build_prompt_input_from_session(
+            &session,
+            vec![UserInput::Text {
+                text: "test".to_string(),
+                text_elements: Vec::new(),
+            }],
+        )
+        .await
+        .expect("build prompt input");
+        let prompt_json =
+            serde_json::to_string(&prompt_input).expect("serialize prompt input to json");
+
+        assert!(!prompt_json.contains("available skills"));
+        assert!(!prompt_json.contains("available plugins"));
+        assert!(!prompt_json.contains("Apps (Connectors)"));
+        assert!(!prompt_json.contains("MCP"));
+    }
+}

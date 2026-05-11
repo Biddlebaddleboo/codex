@@ -456,8 +456,19 @@ pub async fn dynamic_tool_response(sess: &Arc<Session>, id: String, response: Dy
     sess.notify_dynamic_tool_response(&id, response).await;
 }
 
-pub async fn refresh_mcp_servers(sess: &Arc<Session>, refresh_config: McpServerRefreshConfig) {
-    let _ = (sess, refresh_config);
+pub async fn refresh_mcp_servers(
+    sess: &Arc<Session>,
+    sub_id: String,
+    _refresh_config: McpServerRefreshConfig,
+) {
+    warn!(%sub_id, "MCP is disabled in this build; refresh request ignored");
+    sess.send_event_raw(Event {
+        id: sub_id,
+        msg: EventMsg::Warning(WarningEvent {
+            message: "MCP is disabled in this build; refresh request ignored".to_string(),
+        }),
+    })
+    .await;
 }
 
 pub async fn reload_user_config(sess: &Arc<Session>) {
@@ -829,7 +840,7 @@ pub(super) async fn submission_loop(
                     false
                 }
                 Op::RefreshMcpServers { config } => {
-                    refresh_mcp_servers(&sess, config).await;
+                    refresh_mcp_servers(&sess, sub.id.clone(), config).await;
                     false
                 }
                 Op::ReloadUserConfig => {
