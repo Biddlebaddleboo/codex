@@ -1,48 +1,37 @@
-<p align="center"><code>npm i -g @openai/codex</code><br />or <code>brew install --cask codex</code></p>
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
+<p align="center"><strong>Codex CLI (Fork)</strong> is a modified version of the coding agent from OpenAI.
 <p align="center">
   <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
 </p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+
+> [!IMPORTANT]
+> **This is a fork.** Key changes:
+> - **Realtime disabled:** Realtime features and handlers are disabled.
+> - **Hardened Config:** Session and config are hardened to use local defaults; overrides are disabled.
+> - **No Collaboration Mode:** Collaboration mode APIs and updates have been removed.
 
 ---
 
 ## Quickstart
 
-### Installing and running Codex CLI
+### Build and Install from source
 
-Install globally with your preferred package manager:
+Clone the repository and build using Cargo:
 
 ```shell
-# Install using npm
-npm install -g @openai/codex
+git clone https://github.com/openai/codex.git
+cd codex/codex-rs
+
+# Build the release binary
+cargo build --release
 ```
 
+After building, you can find the binary at `target/release/codex`. You can move it to your path:
+
 ```shell
-# Install using Homebrew
-brew install --cask codex
+cp target/release/codex /usr/local/bin/
 ```
 
 Then simply run `codex` to get started.
-
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
-
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
-
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
-
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
-
-</details>
 
 ### Using Codex with your ChatGPT plan
 
