@@ -5,6 +5,8 @@ const SUMMARY_CHECKLIST_HEADING: &str = "Summary checklist:";
 const VALIDATION_NOTE: &str = "Validation is controller-managed.";
 const SILENT_FINAL_INSTRUCTION: &str = "Controller-managed validation is pending. Make the required edits only. Do not output a final answer, summary, checklist, or validation report. When edits are complete, end the turn silently.";
 
+const MAX_FAILURE_OUTPUT_CHARS: usize = 8192;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ControllerValidationState {
     pub(crate) commands: Vec<String>,
@@ -21,7 +23,7 @@ impl ControllerValidationState {
     }
 
     pub(crate) fn increment_attempt(&mut self) {
-        self.attempt += 1;
+        self.attempt = self.attempt.saturating_add(1);
     }
 
     pub(crate) fn has_attempts_remaining(&self, max_attempts: u8) -> bool {
@@ -47,16 +49,34 @@ pub(crate) fn compact_validation_failure_summary(
     max_lines: usize,
 ) -> String {
     let output_lines: Vec<&str> = output.lines().collect();
-    let capped_output = if output_lines.len() > max_lines {
+    let (mut capped_output, was_line_truncated) = if output_lines.len() > max_lines {
         let start = output_lines.len() - max_lines;
-        format!("...\n{}", output_lines[start..].join("\n"))
+        (output_lines[start..].join("\n"), true)
     } else {
-        output.to_string()
+        (output.to_string(), false)
+    };
+
+    let was_char_truncated = if capped_output.len() > MAX_FAILURE_OUTPUT_CHARS {
+        let mut start_index = capped_output.len() - MAX_FAILURE_OUTPUT_CHARS;
+        // UTF-8 safe truncation: move to the next valid char boundary.
+        while start_index < capped_output.len() && !capped_output.is_char_boundary(start_index) {
+            start_index += 1;
+        }
+        capped_output = capped_output[start_index..].to_string();
+        true
+    } else {
+        false
+    };
+
+    let prefix = if was_line_truncated || was_char_truncated {
+        "...\n"
+    } else {
+        ""
     };
 
     format!(
-        "Validation failed for command: `{}`\nExit code: {}\nOutput:\n{}",
-        command, exit_code, capped_output
+        "Validation failed for command: `{}`\nExit code: {}\nOutput:\n{}{}",
+        command, exit_code, prefix, capped_output
     )
 }
 
@@ -466,6 +486,14 @@ mod tests {
         state.increment_attempt();
         assert_eq!(state.attempt(), 2);
         assert!(!state.has_attempts_remaining(2));
+
+        // Test saturating increment
+        let mut max_state = ControllerValidationState {
+            commands: vec![],
+            attempt: u8::MAX,
+        };
+        max_state.increment_attempt();
+        assert_eq!(max_state.attempt(), u8::MAX);
     }
 
     #[test]
@@ -491,9 +519,28 @@ mod tests {
         assert!(summary.contains("Exit code: 1"));
         assert!(summary.contains("out"));
 
-        let capped = compact_validation_failure_summary("cmd", 1, "l1\nl2\nl3", 2);
-        assert!(capped.contains("...\nl2\nl3"));
-        assert!(!capped.contains("l1\nl2\nl3"));
+        let capped_lines = compact_validation_failure_summary("cmd", 1, "l1\nl2\nl3", 2);
+        assert!(capped_lines.contains("...\nl2\nl3"));
+        assert!(!capped_lines.contains("l1\nl2\nl3"));
+
+        // Test huge single line capping
+        let huge_line = "a".repeat(MAX_FAILURE_OUTPUT_CHARS + 100);
+        let capped_huge = compact_validation_failure_summary("cmd", 1, &huge_line, 10);
+        assert!(capped_huge.contains("...\n"));
+        // It should contain the last characters of the huge line.
+        let output_start = capped_huge.find("Output:\n").unwrap() + 8;
+        let output_content = &capped_huge[output_start..];
+        assert!(output_content.starts_with("...\n"));
+        assert_eq!(output_content.len() - 4, MAX_FAILURE_OUTPUT_CHARS);
+
+        // Test UTF-8 safe truncation
+        let multi_byte = "🚀".repeat(MAX_FAILURE_OUTPUT_CHARS);
+        let capped_utf8 = compact_validation_failure_summary("cmd", 1, &multi_byte, 10);
+        assert!(capped_utf8.contains("...\n"));
+        // Ensure no panic and output is valid UTF-8.
+        let output_start_utf8 = capped_utf8.find("Output:\n").unwrap() + 8;
+        let output_content_utf8 = &capped_utf8[output_start_utf8..];
+        assert!(output_content_utf8.starts_with("...\n"));
 
         let repair = build_validation_repair_prompt("some failure");
         assert!(repair.contains("some failure"));
