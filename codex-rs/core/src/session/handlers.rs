@@ -48,6 +48,7 @@ use codex_protocol::request_permissions::RequestPermissionsResponse;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 
 use crate::context_manager::is_user_turn_boundary;
+use crate::controller_validation::transform_user_inputs_for_controller_validation;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -234,6 +235,11 @@ pub(super) async fn user_input_or_turn_inner(
         // new_turn_with_sub_id already emits the error event.
         return;
     };
+    let (items, controller_validation) = transform_user_inputs_for_controller_validation(items);
+    if let Some(controller_validation) = controller_validation {
+        sess.set_pending_controller_validation(&sub_id, controller_validation)
+            .await;
+    }
     sess.maybe_emit_unknown_model_warning_for_turn(current_context.as_ref())
         .await;
     let accepted_items = match sess

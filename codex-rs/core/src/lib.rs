@@ -30,6 +30,7 @@ pub mod config;
 pub mod connectors;
 pub mod context;
 mod context_manager;
+pub(crate) mod controller_validation;
 mod environment_selection;
 pub mod exec;
 pub mod exec_env;

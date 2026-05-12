@@ -227,6 +227,10 @@ pub(crate) async fn handle_output_item_done(
 ) -> Result<OutputItemResult> {
     let mut output = OutputItemResult::default();
     let plan_mode = ctx.turn_context.collaboration_mode.mode == ModeKind::Plan;
+    let suppress_controller_validation_text = ctx
+        .sess
+        .has_pending_controller_validation(&ctx.turn_context.sub_id)
+        .await;
 
     match ToolRouter::build_tool_call(ctx.sess.as_ref(), item.clone()).await {
         // The model emitted a tool call; log it, persist the item immediately, and queue the tool execution.
@@ -258,7 +262,7 @@ pub(crate) async fn handle_output_item_done(
         }
         // No tool call: convert messages/reasoning into turn items and mark them as complete.
         Ok(None) => {
-            let turn_item = handle_non_tool_response_item(
+                let turn_item = handle_non_tool_response_item(
                 ctx.sess.as_ref(),
                 ctx.turn_context.as_ref(),
                 &item,
@@ -266,7 +270,9 @@ pub(crate) async fn handle_output_item_done(
             )
             .await;
             if let Some(turn_item) = turn_item {
-                if previously_active_item.is_none() {
+                let suppress_turn_item = suppress_controller_validation_text
+                    && matches!(&turn_item, TurnItem::AgentMessage(_));
+                if !suppress_turn_item && previously_active_item.is_none() {
                     let mut started_item = turn_item.clone();
                     if let TurnItem::ImageGeneration(item) = &mut started_item {
                         item.status = "in_progress".to_string();
@@ -279,13 +285,21 @@ pub(crate) async fn handle_output_item_done(
                         .await;
                 }
 
-                ctx.sess
-                    .emit_turn_item_completed(&ctx.turn_context, turn_item)
-                    .await;
+                if !suppress_turn_item {
+                    ctx.sess
+                        .emit_turn_item_completed(&ctx.turn_context, turn_item)
+                        .await;
+                }
             }
             record_completed_response_item(ctx.sess.as_ref(), ctx.turn_context.as_ref(), &item)
                 .await;
-            let last_agent_message = last_assistant_message_from_item(&item, plan_mode);
+            let last_agent_message = if suppress_controller_validation_text
+                && matches!(&item, ResponseItem::Message { role, .. } if role == "assistant")
+            {
+                None
+            } else {
+                last_assistant_message_from_item(&item, plan_mode)
+            };
 
             output.last_agent_message = last_agent_message;
         }

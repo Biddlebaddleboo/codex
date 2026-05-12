@@ -556,7 +556,7 @@ impl Session {
     pub async fn on_task_finished(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
-        last_agent_message: Option<String>,
+        mut last_agent_message: Option<String>,
     ) {
         turn_context
             .turn_metadata_state
@@ -574,13 +574,11 @@ impl Session {
                 && let Some(removed_task) = at.remove_task(&turn_context.sub_id)
             {
                 records_turn_token_usage_on_span = removed_task.records_turn_token_usage_on_span;
+                let turn_state = Arc::clone(&at.turn_state);
                 if removed_task.active_turn_is_empty {
                     should_clear_active_turn = true;
-                    let turn_state = Arc::clone(&at.turn_state);
-                    Some(turn_state)
-                } else {
-                    None
                 }
+                Some(turn_state)
             } else {
                 None
             }
@@ -591,6 +589,10 @@ impl Session {
             turn_had_memory_citation = ts.has_memory_citation;
             turn_tool_calls = ts.tool_calls;
             token_usage_at_turn_start = Some(ts.token_usage_at_turn_start.clone());
+            if ts.has_pending_controller_validation() {
+                // Validation is controller-managed; withhold final agent text for this turn.
+                last_agent_message = None;
+            }
         }
         if !pending_input.is_empty() {
             for pending_input_item in pending_input {

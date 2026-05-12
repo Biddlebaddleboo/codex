@@ -14,6 +14,7 @@ use crate::agent::Mailbox;
 use crate::agent::MailboxReceiver;
 use crate::agent::agent_status_from_event;
 use crate::agent::status::is_final;
+use crate::controller_validation::ControllerValidationState;
 use crate::commit_attribution::commit_message_trailer_instruction;
 use crate::compact;
 use crate::config::ManagedFeatures;
@@ -3030,6 +3031,29 @@ impl Session {
             return;
         };
         turn_state.lock().await.has_memory_citation = true;
+    }
+
+    pub(crate) async fn set_pending_controller_validation(
+        &self,
+        sub_id: &str,
+        controller_validation: ControllerValidationState,
+    ) {
+        let turn_state = self.turn_state_for_sub_id(sub_id).await;
+        let Some(turn_state) = turn_state else {
+            return;
+        };
+        turn_state
+            .lock()
+            .await
+            .set_pending_controller_validation(controller_validation);
+    }
+
+    pub(crate) async fn has_pending_controller_validation(&self, sub_id: &str) -> bool {
+        let turn_state = self.turn_state_for_sub_id(sub_id).await;
+        let Some(turn_state) = turn_state else {
+            return false;
+        };
+        turn_state.lock().await.has_pending_controller_validation()
     }
 
     async fn turn_state_for_sub_id(

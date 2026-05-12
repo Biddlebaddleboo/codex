@@ -1377,8 +1377,12 @@ async fn flush_assistant_text_segments_for_item(
     plan_mode_state: Option<&mut PlanModeStreamState>,
     parsers: &mut AssistantMessageStreamParsers,
     item_id: &str,
+    suppress_controller_validation_text: bool,
 ) {
     let parsed = parsers.finish_item(item_id);
+    if suppress_controller_validation_text {
+        return;
+    }
     emit_streamed_assistant_text_delta(sess, turn_context, plan_mode_state, item_id, parsed).await;
 }
 
@@ -1388,8 +1392,12 @@ async fn flush_assistant_text_segments_all(
     turn_context: &TurnContext,
     mut plan_mode_state: Option<&mut PlanModeStreamState>,
     parsers: &mut AssistantMessageStreamParsers,
+    suppress_controller_validation_text: bool,
 ) {
     for (item_id, parsed) in parsers.drain_finished() {
+        if suppress_controller_validation_text {
+            continue;
+        }
         emit_streamed_assistant_text_delta(
             sess,
             turn_context,
@@ -1502,15 +1510,21 @@ async fn handle_assistant_item_done_in_plan_mode(
     state: &mut PlanModeStreamState,
     previously_active_item: Option<&TurnItem>,
     last_agent_message: &mut Option<String>,
+    suppress_controller_validation_text: bool,
 ) -> bool {
     if let ResponseItem::Message { role, .. } = item
         && role == "assistant"
     {
-        maybe_complete_plan_item_from_message(sess, turn_context, state, item).await;
+        if suppress_controller_validation_text {
+            record_completed_response_item(sess, turn_context, item).await;
+            *last_agent_message = None;
+            return true;
+        }
 
         if let Some(turn_item) =
             handle_non_tool_response_item(sess, turn_context, item, /*plan_mode*/ true).await
         {
+            maybe_complete_plan_item_from_message(sess, turn_context, state, item).await;
             emit_turn_item_in_plan_mode(
                 sess,
                 turn_context,
@@ -1613,6 +1627,10 @@ async fn try_run_sampling_request(
     let mut should_emit_turn_diff = false;
     let reasoning_effort = turn_context.effective_reasoning_effort_for_tracing();
     let plan_mode = turn_context.collaboration_mode.mode == ModeKind::Plan;
+    // Controller-managed validation uses this turn-wide backstop to keep assistant text hidden.
+    let suppress_controller_validation_text = sess
+        .has_pending_controller_validation(&turn_context.sub_id)
+        .await;
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
     let mut plan_mode_state = plan_mode.then(|| PlanModeStreamState::new(&turn_context.sub_id));
     let receiving_span = trace_span!("receiving_stream");
@@ -1677,6 +1695,7 @@ async fn try_run_sampling_request(
                         plan_mode_state.as_mut(),
                         &mut assistant_message_stream_parsers,
                         &item_id,
+                        suppress_controller_validation_text,
                     )
                     .await;
                 }
@@ -1688,6 +1707,7 @@ async fn try_run_sampling_request(
                         state,
                         previously_active_item.as_ref(),
                         &mut last_agent_message,
+                        suppress_controller_validation_text,
                     )
                     .await
                 {
@@ -1763,7 +1783,7 @@ async fn try_run_sampling_request(
                     let mut turn_item = turn_item;
                     let mut seeded_parsed: Option<ParsedAssistantTextDelta> = None;
                     let mut seeded_item_id: Option<String> = None;
-                    if matches!(turn_item, TurnItem::AgentMessage(_))
+                    if matches!(&turn_item, TurnItem::AgentMessage(_))
                         && let Some(raw_text) = raw_assistant_output_text_from_item(&item)
                     {
                         let item_id = turn_item.id();
@@ -1782,17 +1802,22 @@ async fn try_run_sampling_request(
                         seeded_parsed = plan_mode.then_some(seeded);
                         seeded_item_id = Some(item_id);
                     }
+                    let suppress_agent_message = suppress_controller_validation_text
+                        && matches!(&turn_item, TurnItem::AgentMessage(_));
                     if let Some(state) = plan_mode_state.as_mut()
-                        && matches!(turn_item, TurnItem::AgentMessage(_))
+                        && matches!(&turn_item, TurnItem::AgentMessage(_))
                     {
-                        let item_id = turn_item.id();
-                        state
-                            .pending_agent_message_items
-                            .insert(item_id, turn_item.clone());
-                    } else {
+                        if !suppress_agent_message {
+                            let item_id = turn_item.id();
+                            state
+                                .pending_agent_message_items
+                                .insert(item_id, turn_item.clone());
+                        }
+                    } else if !suppress_agent_message {
                         sess.emit_turn_item_started(&turn_context, &turn_item).await;
                     }
-                    if let (Some(state), Some(item_id), Some(parsed)) = (
+                    if !suppress_agent_message
+                        && let (Some(state), Some(item_id), Some(parsed)) = (
                         plan_mode_state.as_mut(),
                         seeded_item_id.as_deref(),
                         seeded_parsed,
@@ -1853,6 +1878,7 @@ async fn try_run_sampling_request(
                     &turn_context,
                     plan_mode_state.as_mut(),
                     &mut assistant_message_stream_parsers,
+                    suppress_controller_validation_text,
                 )
                 .await;
                 sess.update_token_usage_info(&turn_context, token_usage.as_ref())
@@ -1873,6 +1899,9 @@ async fn try_run_sampling_request(
                 if let Some(active) = active_item.as_ref() {
                     let item_id = active.id();
                     if matches!(active, TurnItem::AgentMessage(_)) {
+                        if suppress_controller_validation_text {
+                            continue;
+                        }
                         let parsed = assistant_message_stream_parsers.parse_delta(&item_id, &delta);
                         emit_streamed_assistant_text_delta(
                             &sess,

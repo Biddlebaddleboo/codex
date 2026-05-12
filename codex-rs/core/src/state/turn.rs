@@ -19,6 +19,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use rmcp::model::RequestId;
 use tokio::sync::oneshot;
 
+use crate::controller_validation::ControllerValidationState;
 use crate::session::turn_context::TurnContext;
 use crate::tasks::AnySessionTask;
 use codex_protocol::models::AdditionalPermissionProfile;
@@ -114,6 +115,7 @@ pub(crate) struct TurnState {
     pending_elicitations: HashMap<(String, RequestId), oneshot::Sender<ElicitationResponse>>,
     pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pending_input: Vec<ResponseInputItem>,
+    pending_controller_validation: Option<ControllerValidationState>,
     mailbox_delivery_phase: MailboxDeliveryPhase,
     granted_permissions: Option<AdditionalPermissionProfile>,
     strict_auto_review_enabled: bool,
@@ -151,6 +153,7 @@ impl TurnState {
         self.pending_elicitations.clear();
         self.pending_dynamic_tools.clear();
         self.pending_input.clear();
+        self.pending_controller_validation = None;
     }
 
     pub(crate) fn insert_pending_request_permissions(
@@ -273,6 +276,23 @@ impl TurnState {
     pub(crate) fn strict_auto_review_enabled(&self) -> bool {
         self.strict_auto_review_enabled
     }
+
+    pub(crate) fn set_pending_controller_validation(
+        &mut self,
+        controller_validation: ControllerValidationState,
+    ) {
+        self.pending_controller_validation = Some(controller_validation);
+    }
+
+    pub(crate) fn take_pending_controller_validation(
+        &mut self,
+    ) -> Option<ControllerValidationState> {
+        self.pending_controller_validation.take()
+    }
+
+    pub(crate) fn has_pending_controller_validation(&self) -> bool {
+        self.pending_controller_validation.is_some()
+    }
 }
 
 impl ActiveTurn {
@@ -280,5 +300,25 @@ impl ActiveTurn {
     pub(crate) async fn clear_pending(&self) {
         let mut ts = self.turn_state.lock().await;
         ts.clear_pending();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::controller_validation::ControllerValidationState;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn controller_validation_state_round_trips() {
+        let mut turn_state = TurnState::default();
+        let state = ControllerValidationState {
+            commands: vec!["cargo check -p codex-core".to_string()],
+            attempt: 0,
+        };
+
+        turn_state.set_pending_controller_validation(state.clone());
+        assert_eq!(turn_state.take_pending_controller_validation(), Some(state));
+        assert_eq!(turn_state.take_pending_controller_validation(), None);
     }
 }

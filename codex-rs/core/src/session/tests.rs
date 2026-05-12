@@ -6464,6 +6464,65 @@ async fn handle_output_item_done_skips_image_save_message_when_save_fails() {
     assert!(!expected_saved_path.exists());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_output_item_done_suppresses_agent_message_events_when_validation_pending() {
+    let (session, turn_context, rx) = make_session_and_context_with_rx().await;
+    let input = vec![UserInput::Text {
+        text: "hello".to_string(),
+        text_elements: Vec::new(),
+    }];
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            input,
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: false,
+            },
+        )
+        .await;
+
+    while rx.try_recv().is_ok() {}
+
+    session
+        .set_pending_controller_validation(
+            &turn_context.sub_id,
+            crate::controller_validation::ControllerValidationState {
+                commands: vec!["cargo test -p codex-core".to_string()],
+                attempt: 0,
+            },
+        )
+        .await;
+
+    let item = assistant_message("final answer");
+    let mut ctx = HandleOutputCtx {
+        sess: Arc::clone(&session),
+        turn_context: Arc::clone(&turn_context),
+        tool_runtime: test_tool_runtime(Arc::clone(&session), Arc::clone(&turn_context)),
+        cancellation_token: CancellationToken::new(),
+    };
+
+    let output = handle_output_item_done(&mut ctx, item.clone(), /*previously_active_item*/ None)
+        .await
+        .expect("assistant message should succeed");
+
+    assert_eq!(output.last_agent_message, None);
+    let history = session.clone_history().await;
+    assert!(history.raw_items().iter().any(|history_item| history_item == &item));
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("expected raw response item event")
+        .expect("channel open");
+    assert!(matches!(event.msg, EventMsg::RawResponseItem(_)));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(250), rx.recv())
+            .await
+            .is_err(),
+        "unexpected visible assistant event"
+    );
+}
+
 #[tokio::test]
 async fn build_initial_context_uses_previous_turn_settings_for_realtime_end() {
     let (session, turn_context) = make_session_and_context().await;
@@ -7188,6 +7247,89 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
         .expect("channel open");
     assert!(matches!(
         fifth.msg,
+        EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id,
+            last_agent_message: None,
+            time_to_first_token_ms: None,
+            ..
+        }) if turn_id == tc.sub_id
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_finish_keeps_last_agent_message_without_controller_validation() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    let input = vec![UserInput::Text {
+        text: "hello".to_string(),
+        text_elements: Vec::new(),
+    }];
+    sess.spawn_task(
+        Arc::clone(&tc),
+        input,
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+
+    while rx.try_recv().is_ok() {}
+
+    sess.on_task_finished(Arc::clone(&tc), Some("final answer".to_string()))
+        .await;
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("expected turn complete event")
+        .expect("channel open");
+    assert!(matches!(
+        event.msg,
+        EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id,
+            last_agent_message: Some(message),
+            time_to_first_token_ms: None,
+            ..
+        }) if turn_id == tc.sub_id && message == "final answer"
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_finish_with_pending_controller_validation_withholds_last_agent_message() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    let input = vec![UserInput::Text {
+        text: "hello".to_string(),
+        text_elements: Vec::new(),
+    }];
+    sess.spawn_task(
+        Arc::clone(&tc),
+        input,
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+
+    while rx.try_recv().is_ok() {}
+
+    sess.set_pending_controller_validation(
+        &tc.sub_id,
+        crate::controller_validation::ControllerValidationState {
+            commands: vec!["cargo test -p codex-core".to_string()],
+            attempt: 0,
+        },
+    )
+    .await;
+
+    sess.on_task_finished(Arc::clone(&tc), Some("final answer".to_string()))
+        .await;
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("expected turn complete event")
+        .expect("channel open");
+    assert!(matches!(
+        event.msg,
         EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id,
             last_agent_message: None,
