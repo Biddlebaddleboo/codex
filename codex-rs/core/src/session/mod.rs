@@ -3056,6 +3056,17 @@ impl Session {
         turn_state.lock().await.has_pending_controller_validation()
     }
 
+    pub(crate) async fn take_pending_controller_validation(
+        &self,
+        sub_id: &str,
+    ) -> Option<ControllerValidationState> {
+        let turn_state = self.turn_state_for_sub_id(sub_id).await;
+        let Some(turn_state) = turn_state else {
+            return None;
+        };
+        turn_state.lock().await.take_pending_controller_validation()
+    }
+
     async fn turn_state_for_sub_id(
         &self,
         sub_id: &str,

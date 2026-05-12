@@ -11,6 +11,62 @@ pub(crate) struct ControllerValidationState {
     pub(crate) attempt: u8,
 }
 
+impl ControllerValidationState {
+    pub(crate) fn commands(&self) -> &[String] {
+        &self.commands
+    }
+
+    pub(crate) fn attempt(&self) -> u8 {
+        self.attempt
+    }
+
+    pub(crate) fn increment_attempt(&mut self) {
+        self.attempt += 1;
+    }
+
+    pub(crate) fn has_attempts_remaining(&self, max_attempts: u8) -> bool {
+        self.attempt < max_attempts
+    }
+
+    pub(crate) fn failed_command_first(&mut self, failed_command: &str) {
+        if let Some(pos) = self.commands.iter().position(|c| c == failed_command) {
+            let cmd = self.commands.remove(pos);
+            self.commands.insert(0, cmd);
+        }
+    }
+}
+
+pub(crate) fn validation_success_message() -> &'static str {
+    "All checks passed."
+}
+
+pub(crate) fn compact_validation_failure_summary(
+    command: &str,
+    exit_code: i32,
+    output: &str,
+    max_lines: usize,
+) -> String {
+    let output_lines: Vec<&str> = output.lines().collect();
+    let capped_output = if output_lines.len() > max_lines {
+        let start = output_lines.len() - max_lines;
+        format!("...\n{}", output_lines[start..].join("\n"))
+    } else {
+        output.to_string()
+    };
+
+    format!(
+        "Validation failed for command: `{}`\nExit code: {}\nOutput:\n{}",
+        command, exit_code, capped_output
+    )
+}
+
+pub(crate) fn build_validation_repair_prompt(failure_summary: &str) -> String {
+    format!(
+        "{}\n\nFix this validation failure only. Do not output a final summary. Validation remains controller-managed.",
+        failure_summary
+    )
+}
+
 pub(crate) struct ControllerValidationTransform {
     pub model_visible_text: String,
     pub commands: Vec<String>,
@@ -390,5 +446,58 @@ mod tests {
                 .model_visible_text
                 .contains("Controller-managed validation is pending.")
         );
+    }
+
+    #[test]
+    fn state_helpers() {
+        let mut state = ControllerValidationState {
+            commands: vec!["c1".to_string(), "c2".to_string()],
+            attempt: 0,
+        };
+
+        assert_eq!(state.commands(), &["c1", "c2"]);
+        assert_eq!(state.attempt(), 0);
+        assert!(state.has_attempts_remaining(2));
+
+        state.increment_attempt();
+        assert_eq!(state.attempt(), 1);
+        assert!(state.has_attempts_remaining(2));
+
+        state.increment_attempt();
+        assert_eq!(state.attempt(), 2);
+        assert!(!state.has_attempts_remaining(2));
+    }
+
+    #[test]
+    fn failed_command_first() {
+        let mut state = ControllerValidationState {
+            commands: vec!["c1".to_string(), "c2".to_string(), "c3".to_string()],
+            attempt: 0,
+        };
+
+        state.failed_command_first("c2");
+        assert_eq!(state.commands(), &["c2", "c1", "c3"]);
+
+        state.failed_command_first("nonexistent");
+        assert_eq!(state.commands(), &["c2", "c1", "c3"]);
+    }
+
+    #[test]
+    fn formatting_helpers() {
+        assert_eq!(validation_success_message(), "All checks passed.");
+
+        let summary = compact_validation_failure_summary("cmd", 1, "out", 10);
+        assert!(summary.contains("`cmd`"));
+        assert!(summary.contains("Exit code: 1"));
+        assert!(summary.contains("out"));
+
+        let capped = compact_validation_failure_summary("cmd", 1, "l1\nl2\nl3", 2);
+        assert!(capped.contains("...\nl2\nl3"));
+        assert!(!capped.contains("l1\nl2\nl3"));
+
+        let repair = build_validation_repair_prompt("some failure");
+        assert!(repair.contains("some failure"));
+        assert!(repair.contains("Fix this validation failure only"));
+        assert!(repair.contains("Do not output a final summary"));
     }
 }
