@@ -1,3 +1,4 @@
+use crate::controller_validation::ControllerValidationState;
 mod compact;
 mod regular;
 mod review;
@@ -568,6 +569,7 @@ impl Session {
         let mut turn_had_memory_citation = false;
         let mut turn_tool_calls = 0_u64;
         let mut records_turn_token_usage_on_span = false;
+        let mut controller_validation: Option<ControllerValidationState> = None;
         let turn_state = {
             let mut active = self.active_turn.lock().await;
             if let Some(at) = active.as_mut()
@@ -592,6 +594,7 @@ impl Session {
             if ts.has_pending_controller_validation() {
                 // Validation is controller-managed; withhold final agent text for this turn.
                 last_agent_message = None;
+                controller_validation = ts.take_pending_controller_validation();
             }
         }
         if !pending_input.is_empty() {
@@ -607,6 +610,18 @@ impl Session {
                     }
                 }
             }
+        }
+        // Run controller validation after pending input processing but
+        // before TurnComplete, so the controller-owned final message is
+        // the last thing the user sees for this turn.
+        if let Some(validation) = controller_validation {
+            last_agent_message = Some(
+                self.run_controller_validation_commands(
+                    &turn_context,
+                    validation,
+                )
+                .await,
+            );
         }
         // Emit token usage metrics.
         if let Some(token_usage_at_turn_start) = token_usage_at_turn_start {
@@ -783,6 +798,50 @@ impl Session {
                 warn!("failed to apply goal runtime maybe-continue event: {err}");
             }
         }
+    }
+
+    async fn run_controller_validation_commands(
+        self: &Arc<Self>,
+        turn_context: &Arc<TurnContext>,
+        validation: ControllerValidationState,
+    ) -> String {
+        use crate::controller_validation::compact_validation_failure_summary;
+        use crate::controller_validation::validation_success_message;
+        use crate::tools::handlers::run_controller_validation_shell_command;
+
+        for command in validation.commands() {
+            match run_controller_validation_shell_command(
+                Arc::clone(self),
+                Arc::clone(turn_context),
+                command,
+            )
+            .await
+            {
+                Ok(output) if output.exit_code == 0 => {
+                    // Command passed; continue to the next.
+                }
+                Ok(output) => {
+                    // Command failed; short-circuit remaining commands.
+                    return compact_validation_failure_summary(
+                        command,
+                        output.exit_code,
+                        &output.aggregated_output.text,
+                        /*max_lines*/ 20,
+                    );
+                }
+                Err(err) => {
+                    // Runner error; treat as failure with exit code -1.
+                    return compact_validation_failure_summary(
+                        command,
+                        -1,
+                        &format!("{err:?}"),
+                        /*max_lines*/ 20,
+                    );
+                }
+            }
+        }
+
+        validation_success_message().to_string()
     }
 
     async fn take_active_turn(&self) -> Option<ActiveTurn> {

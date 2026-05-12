@@ -404,7 +404,7 @@ mod tests {
             transformed_items,
             vec![
                 UserInput::Text {
-                    text: "Before\nBuild/test commands:\nValidation is controller-managed.\nController-managed validation is pending.\nSummary checklist:\n- done"
+                    text: "Before\nBuild/test commands:\nValidation is controller-managed.\nController-managed validation is pending. Make the required edits only. Do not output a final answer, summary, checklist, or validation report. When edits are complete, end the turn silently."
                         .to_string(),
                     text_elements: Vec::new(),
                 },

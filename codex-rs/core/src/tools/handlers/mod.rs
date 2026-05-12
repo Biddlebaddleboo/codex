@@ -65,6 +65,7 @@ pub use shell::ContainerExecHandler;
 pub use shell::LocalShellHandler;
 pub use shell::ShellCommandHandler;
 pub use shell::ShellHandler;
+pub(crate) use shell::run_controller_validation_shell_command;
 pub use test_sync::TestSyncHandler;
 pub use tool_search::ToolSearchHandler;
 pub use unavailable_tool::UnavailableToolHandler;

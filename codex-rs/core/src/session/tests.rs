@@ -9,6 +9,7 @@ use crate::function_tool::FunctionCallError;
 use crate::shell::default_user_shell;
 use crate::skills::SkillRenderSideEffects;
 use crate::skills::render::SkillMetadataBudget;
+use crate::build_available_skills;
 use crate::test_support::models_manager_with_provider;
 use crate::tools::format_exec_output_str;
 use codex_config::ConfigLayerStack;
@@ -7315,7 +7316,7 @@ async fn task_finish_with_pending_controller_validation_withholds_last_agent_mes
     sess.set_pending_controller_validation(
         &tc.sub_id,
         crate::controller_validation::ControllerValidationState {
-            commands: vec!["cargo test -p codex-core".to_string()],
+            commands: Vec::new(),
             attempt: 0,
         },
     )
@@ -7332,10 +7333,10 @@ async fn task_finish_with_pending_controller_validation_withholds_last_agent_mes
         event.msg,
         EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id,
-            last_agent_message: None,
+            last_agent_message: Some(ref message),
             time_to_first_token_ms: None,
             ..
-        }) if turn_id == tc.sub_id
+        }) if turn_id == tc.sub_id && message == "All checks passed."
     ));
 }
 

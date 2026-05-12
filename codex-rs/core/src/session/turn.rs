@@ -1999,6 +1999,7 @@ async fn try_run_sampling_request(
         &turn_context,
         plan_mode_state.as_mut(),
         &mut assistant_message_stream_parsers,
+        suppress_controller_validation_text,
     )
     .await;
 
