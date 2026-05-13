@@ -619,9 +619,9 @@ impl Session {
             let validation_message = self
                 .run_controller_validation_commands(&turn_context, validation)
                 .await;
-            self.finalize_controller_validation_turn_output(&turn_context, &validation_message)
+            last_agent_message = self
+                .finalize_controller_validation_turn_output(&turn_context, &validation_message)
                 .await;
-            last_agent_message = Some(validation_message);
         }
         // Emit token usage metrics.
         if let Some(token_usage_at_turn_start) = token_usage_at_turn_start {
@@ -848,7 +848,7 @@ impl Session {
         self: &Arc<Self>,
         turn_context: &Arc<TurnContext>,
         validation_message: &str,
-    ) {
+    ) -> Option<String> {
         let controller_result_item = ResponseItem::Message {
             id: None,
             role: "assistant".to_string(),
@@ -860,8 +860,8 @@ impl Session {
         // Controller validation owns terminal visible output for this turn.
         self.record_response_item_and_emit_turn_item(turn_context.as_ref(), controller_result_item)
             .await;
-        // Future repair loops must call this finalizer only once after all attempts complete.
-        let _hook_outcome = finalize_turn_output_with_hooks(
+        // Controller-managed validation must run Stop/AfterAgent once only at terminal result.
+        let hook_outcome = finalize_turn_output_with_hooks(
             self,
             turn_context,
             Vec::new(),
@@ -870,6 +870,7 @@ impl Session {
             /*allow_stop_continuation*/ false,
         )
         .await;
+        hook_outcome.last_agent_message
     }
 
     async fn take_active_turn(&self) -> Option<ActiveTurn> {
