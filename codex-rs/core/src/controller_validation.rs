@@ -134,8 +134,7 @@ pub(crate) fn transform_user_inputs_for_controller_validation(
 pub(crate) fn transform_packet_for_controller_validation(
     text: &str,
 ) -> ControllerValidationTransform {
-    let Some(parsed) = parse_controller_validation_packet(text)
-    else {
+    let Some(parsed) = parse_controller_validation_packet(text) else {
         return ControllerValidationTransform {
             model_visible_text: text.to_owned(),
             commands: Vec::new(),
@@ -158,9 +157,7 @@ pub(crate) fn transform_packet_for_controller_validation(
             model_visible_lines.push(SILENT_FINAL_INSTRUCTION.to_owned());
             continue;
         }
-        if line_index > parsed.build_start
-            && line_index < parsed.build_end.unwrap_or(line_count)
-        {
+        if line_index > parsed.build_start && line_index < parsed.build_end.unwrap_or(line_count) {
             continue;
         }
         if let Some(summary_start) = parsed.summary_start {
@@ -262,8 +259,8 @@ struct ControllerValidationPacket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pretty_assertions::assert_eq;
     use codex_protocol::user_input::UserInput;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn missing_build_test_section_is_noop() {

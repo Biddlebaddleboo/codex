@@ -262,7 +262,7 @@ pub(crate) async fn handle_output_item_done(
         }
         // No tool call: convert messages/reasoning into turn items and mark them as complete.
         Ok(None) => {
-                let turn_item = handle_non_tool_response_item(
+            let turn_item = handle_non_tool_response_item(
                 ctx.sess.as_ref(),
                 ctx.turn_context.as_ref(),
                 &item,

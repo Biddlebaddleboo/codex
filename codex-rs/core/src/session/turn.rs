@@ -1818,10 +1818,11 @@ async fn try_run_sampling_request(
                     }
                     if !suppress_agent_message
                         && let (Some(state), Some(item_id), Some(parsed)) = (
-                        plan_mode_state.as_mut(),
-                        seeded_item_id.as_deref(),
-                        seeded_parsed,
-                    ) {
+                            plan_mode_state.as_mut(),
+                            seeded_item_id.as_deref(),
+                            seeded_parsed,
+                        )
+                    {
                         emit_streamed_assistant_text_delta(
                             &sess,
                             &turn_context,

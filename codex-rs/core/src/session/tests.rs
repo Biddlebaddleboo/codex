@@ -1,5 +1,6 @@
 use super::turn_context::TurnEnvironment;
 use super::*;
+use crate::build_available_skills;
 use crate::config::ConfigBuilder;
 use crate::config::test_config;
 use crate::context::ContextualUserFragment;
@@ -9,7 +10,6 @@ use crate::function_tool::FunctionCallError;
 use crate::shell::default_user_shell;
 use crate::skills::SkillRenderSideEffects;
 use crate::skills::render::SkillMetadataBudget;
-use crate::build_available_skills;
 use crate::test_support::models_manager_with_provider;
 use crate::tools::format_exec_output_str;
 use codex_config::ConfigLayerStack;
@@ -6503,13 +6503,19 @@ async fn handle_output_item_done_suppresses_agent_message_events_when_validation
         cancellation_token: CancellationToken::new(),
     };
 
-    let output = handle_output_item_done(&mut ctx, item.clone(), /*previously_active_item*/ None)
-        .await
-        .expect("assistant message should succeed");
+    let output =
+        handle_output_item_done(&mut ctx, item.clone(), /*previously_active_item*/ None)
+            .await
+            .expect("assistant message should succeed");
 
     assert_eq!(output.last_agent_message, None);
     let history = session.clone_history().await;
-    assert!(history.raw_items().iter().any(|history_item| history_item == &item));
+    assert!(
+        history
+            .raw_items()
+            .iter()
+            .any(|history_item| history_item == &item)
+    );
 
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
         .await
@@ -7316,7 +7322,7 @@ async fn task_finish_with_pending_controller_validation_withholds_last_agent_mes
     sess.set_pending_controller_validation(
         &tc.sub_id,
         crate::controller_validation::ControllerValidationState {
-            commands: Vec::new(),
+            commands: vec!["exit 0".to_string()],
             attempt: 0,
         },
     )
@@ -7325,10 +7331,16 @@ async fn task_finish_with_pending_controller_validation_withholds_last_agent_mes
     sess.on_task_finished(Arc::clone(&tc), Some("final answer".to_string()))
         .await;
 
-    let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
-        .await
-        .expect("expected turn complete event")
-        .expect("channel open");
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let event = rx.recv().await.expect("channel open");
+            if matches!(event.msg, EventMsg::TurnComplete(_)) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("expected turn complete event");
     assert!(matches!(
         event.msg,
         EventMsg::TurnComplete(TurnCompleteEvent {
@@ -7337,6 +7349,60 @@ async fn task_finish_with_pending_controller_validation_withholds_last_agent_mes
             time_to_first_token_ms: None,
             ..
         }) if turn_id == tc.sub_id && message == "All checks passed."
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_finish_with_pending_controller_validation_surfaces_failed_command() {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    let input = vec![UserInput::Text {
+        text: "hello".to_string(),
+        text_elements: Vec::new(),
+    }];
+    sess.spawn_task(
+        Arc::clone(&tc),
+        input,
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+
+    while rx.try_recv().is_ok() {}
+
+    sess.set_pending_controller_validation(
+        &tc.sub_id,
+        crate::controller_validation::ControllerValidationState {
+            commands: vec!["exit 7".to_string()],
+            attempt: 0,
+        },
+    )
+    .await;
+
+    sess.on_task_finished(Arc::clone(&tc), Some("final answer".to_string()))
+        .await;
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let event = rx.recv().await.expect("channel open");
+            if matches!(event.msg, EventMsg::TurnComplete(_)) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("expected turn complete event");
+    assert!(matches!(
+        event.msg,
+        EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id,
+            last_agent_message: Some(ref message),
+            time_to_first_token_ms: None,
+            ..
+        }) if turn_id == tc.sub_id
+            && message.contains("Validation failed for command: `exit 7`")
+            && message.contains("Exit code: 7")
     ));
 }
 

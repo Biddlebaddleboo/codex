@@ -15,6 +15,9 @@ use crate::exec::ExecParams;
 use crate::exec_env::create_env;
 use crate::exec_policy::ExecApprovalRequest;
 use crate::function_tool::FunctionCallError;
+use crate::hook_runtime::record_additional_contexts;
+use crate::hook_runtime::run_post_tool_use_hooks;
+use crate::hook_runtime::run_pre_tool_use_hooks;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
@@ -23,6 +26,7 @@ use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
+use crate::tools::format_exec_output_str;
 use crate::tools::handlers::apply_granted_turn_permissions;
 use crate::tools::handlers::apply_patch::intercept_apply_patch;
 use crate::tools::handlers::implicit_granted_permissions;
@@ -52,7 +56,9 @@ pub use shell_handler::ShellHandler;
 /// Timeout for controller validation commands. Build/test commands can
 /// legitimately take longer than the default shell tool timeout (10 s).
 /// A five-minute ceiling keeps validation bounded without timing out
-/// reasonable builds.
+/// reasonable builds. Controller validation runs in `on_task_finished`
+/// after the model task is removed, so no clean task cancellation token
+/// is available at this call site; timeout is the cancellation bound.
 const CONTROLLER_VALIDATION_TIMEOUT_MS: u64 = 5 * 60 * 1000; // 5 minutes
 
 fn shell_function_payload_command(payload: &ToolPayload) -> Option<String> {
@@ -333,6 +339,30 @@ pub(crate) async fn run_controller_validation_shell_command(
     turn: Arc<TurnContext>,
     command: &str,
 ) -> Result<ExecToolCallOutput, FunctionCallError> {
+    let call_id = Uuid::new_v4().to_string();
+    let hook_tool_name = HookToolName::bash();
+    let hook_input = serde_json::json!({ "command": command });
+    // Controller validation must keep `ToolOrchestrator + ShellRuntime` and
+    // skip `intercept_apply_patch`, so it cannot use full registry dispatch.
+    // Run `PreToolUse`/`PostToolUse` hooks directly with the Bash hook payload.
+    // Legacy `AfterToolUse` is registry-only and intentionally not reused here.
+    if let Some(message) = run_pre_tool_use_hooks(
+        &session,
+        &turn,
+        call_id.clone(),
+        &hook_tool_name,
+        &hook_input,
+    )
+    .await
+    {
+        return Ok(ExecToolCallOutput {
+            exit_code: -1,
+            stderr: codex_protocol::exec_output::StreamOutput::new(message.clone()),
+            aggregated_output: codex_protocol::exec_output::StreamOutput::new(message),
+            ..Default::default()
+        });
+    }
+
     // Derive shell argv from the command string as a shell snippet.
     // `derive_exec_args` wraps the snippet in `$SHELL -lc <snippet>`
     // without whitespace splitting, preserving pipes, redirects, etc.
@@ -361,10 +391,7 @@ pub(crate) async fn run_controller_validation_shell_command(
         network: turn.network.clone(),
         sandbox_permissions: SandboxPermissions::UseDefault,
         windows_sandbox_level: turn.windows_sandbox_level,
-        windows_sandbox_private_desktop: turn
-            .config
-            .permissions
-            .windows_sandbox_private_desktop,
+        windows_sandbox_private_desktop: turn.config.permissions.windows_sandbox_private_desktop,
         justification: None,
         arg0: None,
     };
@@ -423,10 +450,7 @@ pub(crate) async fn run_controller_validation_shell_command(
         .sandbox_permissions
         .requests_sandbox_override()
         && !effective_additional_permissions.permissions_preapproved
-        && !matches!(
-            turn.approval_policy.value(),
-            AskForApproval::OnRequest
-        )
+        && !matches!(turn.approval_policy.value(), AskForApproval::OnRequest)
     {
         let approval_policy = turn.approval_policy.value();
         return Err(FunctionCallError::RespondToModel(format!(
@@ -442,7 +466,6 @@ pub(crate) async fn run_controller_validation_shell_command(
 
     // Emit shell begin event.
     let source = ExecCommandSource::Agent;
-    let call_id = Uuid::new_v4().to_string();
     let emitter = ToolEmitter::shell(
         exec_params.command.clone(),
         exec_params.cwd.clone(),
@@ -517,7 +540,7 @@ pub(crate) async fn run_controller_validation_shell_command(
             // Clone the output before `finish` consumes it, so the caller
             // can inspect exit_code and aggregated output.
             let output = result.output;
-            let output_for_caller = output.clone();
+            let mut output_for_caller = output.clone();
 
             let event_ctx = ToolEventCtx::new(
                 session.as_ref(),
@@ -531,6 +554,41 @@ pub(crate) async fn run_controller_validation_shell_command(
             let _ = emitter
                 .finish(event_ctx, Ok(output), /*applied_patch_delta*/ None)
                 .await;
+
+            if output_for_caller.exit_code == 0 {
+                let post_tool_use_outcome = run_post_tool_use_hooks(
+                    &session,
+                    &turn,
+                    call_id,
+                    hook_tool_name.name().to_string(),
+                    hook_tool_name.matcher_aliases().to_vec(),
+                    hook_input,
+                    JsonValue::String(format_exec_output_str(
+                        &output_for_caller,
+                        turn.truncation_policy,
+                    )),
+                )
+                .await;
+                record_additional_contexts(
+                    &session,
+                    &turn,
+                    post_tool_use_outcome.additional_contexts.clone(),
+                )
+                .await;
+                if post_tool_use_outcome.should_stop
+                    || post_tool_use_outcome.feedback_message.is_some()
+                {
+                    let message = post_tool_use_outcome
+                        .feedback_message
+                        .or(post_tool_use_outcome.stop_reason)
+                        .unwrap_or_else(|| "PostToolUse hook stopped execution".to_string());
+                    output_for_caller.exit_code = -1;
+                    output_for_caller.stderr =
+                        codex_protocol::exec_output::StreamOutput::new(message.clone());
+                    output_for_caller.aggregated_output =
+                        codex_protocol::exec_output::StreamOutput::new(message);
+                }
+            }
             Ok(output_for_caller)
         }
         Err(tool_error) => {
@@ -544,7 +602,11 @@ pub(crate) async fn run_controller_validation_shell_command(
             // into the appropriate ExecCommandEnd shape and returns a
             // FunctionCallError for the caller.
             let finish_err = emitter
-                .finish(event_ctx, Err(tool_error), /*applied_patch_delta*/ None)
+                .finish(
+                    event_ctx,
+                    Err(tool_error),
+                    /*applied_patch_delta*/ None,
+                )
                 .await
                 .unwrap_err();
             Err(finish_err)

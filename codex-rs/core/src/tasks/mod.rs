@@ -616,11 +616,8 @@ impl Session {
         // the last thing the user sees for this turn.
         if let Some(validation) = controller_validation {
             last_agent_message = Some(
-                self.run_controller_validation_commands(
-                    &turn_context,
-                    validation,
-                )
-                .await,
+                self.run_controller_validation_commands(&turn_context, validation)
+                    .await,
             );
         }
         // Emit token usage metrics.
