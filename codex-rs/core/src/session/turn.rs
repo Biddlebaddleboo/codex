@@ -346,119 +346,26 @@ pub(crate) async fn run_turn(
 
                 if !needs_follow_up {
                     last_agent_message = sampling_request_last_agent_message;
-                    let stop_hook_permission_mode = match turn_context.approval_policy.value() {
-                        AskForApproval::Never => "bypassPermissions",
-                        AskForApproval::UnlessTrusted
-                        | AskForApproval::OnFailure
-                        | AskForApproval::OnRequest
-                        | AskForApproval::Granular(_) => "default",
-                    }
-                    .to_string();
-                    let stop_request = codex_hooks::StopRequest {
-                        session_id: sess.conversation_id,
-                        turn_id: turn_context.sub_id.clone(),
-                        cwd: turn_context.cwd.clone(),
-                        transcript_path: sess.hook_transcript_path().await,
-                        model: turn_context.model_info.slug.clone(),
-                        permission_mode: stop_hook_permission_mode,
-                        stop_hook_active,
-                        last_assistant_message: last_agent_message.clone(),
-                    };
-                    let hooks = sess.hooks();
-                    for run in hooks.preview_stop(&stop_request) {
-                        sess.send_event(
-                            &turn_context,
-                            EventMsg::HookStarted(codex_protocol::protocol::HookStartedEvent {
-                                turn_id: Some(turn_context.sub_id.clone()),
-                                run,
-                            }),
-                        )
-                        .await;
-                    }
-                    let stop_outcome = hooks.run_stop(stop_request).await;
-                    emit_hook_completed_events(&sess, &turn_context, stop_outcome.hook_events)
-                        .await;
-                    if stop_outcome.should_block {
-                        if let Some(hook_prompt_message) =
-                            build_hook_prompt_message(&stop_outcome.continuation_fragments)
-                        {
-                            sess.record_conversation_items(
-                                &turn_context,
-                                std::slice::from_ref(&hook_prompt_message),
-                            )
-                            .await;
-                            stop_hook_active = true;
-                            continue;
-                        } else {
-                            sess.send_event(
-                                &turn_context,
-                                EventMsg::Warning(WarningEvent {
-                                    message: "Stop hook requested continuation without a prompt; ignoring the block.".to_string(),
-                                }),
-                            )
-                            .await;
-                        }
-                    }
-                    if stop_outcome.should_stop {
+                    if sess
+                        .has_pending_controller_validation(&turn_context.sub_id)
+                        .await
+                    {
+                        // Controller validation owns terminal output and deferred Stop/AfterAgent.
                         break;
                     }
-                    let hook_outcomes = sess
-                        .hooks()
-                        .dispatch(HookPayload {
-                            session_id: sess.conversation_id,
-                            cwd: turn_context.cwd.clone(),
-                            client: turn_context.app_server_client_name.clone(),
-                            triggered_at: chrono::Utc::now(),
-                            hook_event: HookEvent::AfterAgent {
-                                event: HookEventAfterAgent {
-                                    thread_id: sess.conversation_id,
-                                    turn_id: turn_context.sub_id.clone(),
-                                    input_messages: sampling_request_input_messages,
-                                    last_assistant_message: last_agent_message.clone(),
-                                },
-                            },
-                        })
-                        .await;
-
-                    let mut abort_message = None;
-                    for hook_outcome in hook_outcomes {
-                        let hook_name = hook_outcome.hook_name;
-                        match hook_outcome.result {
-                            HookResult::Success => {}
-                            HookResult::FailedContinue(error) => {
-                                warn!(
-                                    turn_id = %turn_context.sub_id,
-                                    hook_name = %hook_name,
-                                    error = %error,
-                                    "after_agent hook failed; continuing"
-                                );
-                            }
-                            HookResult::FailedAbort(error) => {
-                                let message = format!(
-                                    "after_agent hook '{hook_name}' failed and aborted turn completion: {error}"
-                                );
-                                warn!(
-                                    turn_id = %turn_context.sub_id,
-                                    hook_name = %hook_name,
-                                    error = %error,
-                                    "after_agent hook failed; aborting operation"
-                                );
-                                if abort_message.is_none() {
-                                    abort_message = Some(message);
-                                }
-                            }
-                        }
-                    }
-                    if let Some(message) = abort_message {
-                        sess.send_event(
-                            &turn_context,
-                            EventMsg::Error(ErrorEvent {
-                                message,
-                                codex_error_info: None,
-                            }),
-                        )
-                        .await;
-                        return None;
+                    let hook_outcome = finalize_turn_output_with_hooks(
+                        &sess,
+                        &turn_context,
+                        sampling_request_input_messages,
+                        last_agent_message.clone(),
+                        stop_hook_active,
+                        /*allow_stop_continuation*/ true,
+                    )
+                    .await;
+                    last_agent_message = hook_outcome.last_agent_message;
+                    stop_hook_active = hook_outcome.stop_hook_active;
+                    if hook_outcome.continue_with_stop_prompt {
+                        continue;
                     }
                     break;
                 }
@@ -498,6 +405,147 @@ pub(crate) async fn run_turn(
     }
 
     last_agent_message
+}
+
+pub(crate) struct FinalizeTurnOutputWithHooksOutcome {
+    pub(crate) last_agent_message: Option<String>,
+    pub(crate) continue_with_stop_prompt: bool,
+    pub(crate) stop_hook_active: bool,
+}
+
+pub(crate) async fn finalize_turn_output_with_hooks(
+    sess: &Arc<Session>,
+    turn_context: &Arc<TurnContext>,
+    input_messages: Vec<String>,
+    mut last_agent_message: Option<String>,
+    stop_hook_active: bool,
+    allow_stop_continuation: bool,
+) -> FinalizeTurnOutputWithHooksOutcome {
+    let stop_hook_permission_mode = match turn_context.approval_policy.value() {
+        AskForApproval::Never => "bypassPermissions",
+        AskForApproval::UnlessTrusted
+        | AskForApproval::OnFailure
+        | AskForApproval::OnRequest
+        | AskForApproval::Granular(_) => "default",
+    }
+    .to_string();
+    let stop_request = codex_hooks::StopRequest {
+        session_id: sess.conversation_id,
+        turn_id: turn_context.sub_id.clone(),
+        cwd: turn_context.cwd.clone(),
+        transcript_path: sess.hook_transcript_path().await,
+        model: turn_context.model_info.slug.clone(),
+        permission_mode: stop_hook_permission_mode,
+        stop_hook_active,
+        last_assistant_message: last_agent_message.clone(),
+    };
+    let hooks = sess.hooks();
+    for run in hooks.preview_stop(&stop_request) {
+        sess.send_event(
+            turn_context,
+            EventMsg::HookStarted(codex_protocol::protocol::HookStartedEvent {
+                turn_id: Some(turn_context.sub_id.clone()),
+                run,
+            }),
+        )
+        .await;
+    }
+    let stop_outcome = hooks.run_stop(stop_request).await;
+    emit_hook_completed_events(sess, turn_context, stop_outcome.hook_events).await;
+    if stop_outcome.should_block {
+        if allow_stop_continuation
+            && let Some(hook_prompt_message) =
+                build_hook_prompt_message(&stop_outcome.continuation_fragments)
+        {
+            sess.record_conversation_items(
+                turn_context,
+                std::slice::from_ref(&hook_prompt_message),
+            )
+            .await;
+            return FinalizeTurnOutputWithHooksOutcome {
+                last_agent_message,
+                continue_with_stop_prompt: true,
+                stop_hook_active: true,
+            };
+        }
+        let warning = if allow_stop_continuation {
+            "Stop hook requested continuation without a prompt; ignoring the block.".to_string()
+        } else {
+            "Stop hook requested continuation after controller-managed validation, but continuation is not implemented. Completing turn."
+                .to_string()
+        };
+        sess.send_event(
+            turn_context,
+            EventMsg::Warning(WarningEvent { message: warning }),
+        )
+        .await;
+    }
+    if !stop_outcome.should_stop {
+        let hook_outcomes = sess
+            .hooks()
+            .dispatch(HookPayload {
+                session_id: sess.conversation_id,
+                cwd: turn_context.cwd.clone(),
+                client: turn_context.app_server_client_name.clone(),
+                triggered_at: chrono::Utc::now(),
+                hook_event: HookEvent::AfterAgent {
+                    event: HookEventAfterAgent {
+                        thread_id: sess.conversation_id,
+                        turn_id: turn_context.sub_id.clone(),
+                        input_messages,
+                        last_assistant_message: last_agent_message.clone(),
+                    },
+                },
+            })
+            .await;
+
+        let mut abort_message = None;
+        for hook_outcome in hook_outcomes {
+            let hook_name = hook_outcome.hook_name;
+            match hook_outcome.result {
+                HookResult::Success => {}
+                HookResult::FailedContinue(error) => {
+                    warn!(
+                        turn_id = %turn_context.sub_id,
+                        hook_name = %hook_name,
+                        error = %error,
+                        "after_agent hook failed; continuing"
+                    );
+                }
+                HookResult::FailedAbort(error) => {
+                    let message = format!(
+                        "after_agent hook '{hook_name}' failed and aborted turn completion: {error}"
+                    );
+                    warn!(
+                        turn_id = %turn_context.sub_id,
+                        hook_name = %hook_name,
+                        error = %error,
+                        "after_agent hook failed; aborting operation"
+                    );
+                    if abort_message.is_none() {
+                        abort_message = Some(message);
+                    }
+                }
+            }
+        }
+        if let Some(message) = abort_message {
+            sess.send_event(
+                turn_context,
+                EventMsg::Error(ErrorEvent {
+                    message,
+                    codex_error_info: None,
+                }),
+            )
+            .await;
+            last_agent_message = None;
+        }
+    }
+
+    FinalizeTurnOutputWithHooksOutcome {
+        last_agent_message,
+        continue_with_stop_prompt: false,
+        stop_hook_active,
+    }
 }
 
 async fn track_turn_resolved_config_analytics(

@@ -7331,9 +7331,26 @@ async fn task_finish_with_pending_controller_validation_withholds_last_agent_mes
     sess.on_task_finished(Arc::clone(&tc), Some("final answer".to_string()))
         .await;
 
+    let mut saw_visible_validation_message = false;
     let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             let event = rx.recv().await.expect("channel open");
+            if let EventMsg::ItemCompleted(ItemCompletedEvent {
+                item: TurnItem::AgentMessage(agent_message),
+                ..
+            }) = &event.msg
+            {
+                let text = agent_message
+                    .content
+                    .iter()
+                    .map(|content| match content {
+                        codex_protocol::items::AgentMessageContent::Text { text } => text.as_str(),
+                    })
+                    .collect::<String>();
+                if text == "All checks passed." {
+                    saw_visible_validation_message = true;
+                }
+            }
             if matches!(event.msg, EventMsg::TurnComplete(_)) {
                 break event;
             }
@@ -7341,6 +7358,7 @@ async fn task_finish_with_pending_controller_validation_withholds_last_agent_mes
     })
     .await
     .expect("expected turn complete event");
+    assert!(saw_visible_validation_message);
     assert!(matches!(
         event.msg,
         EventMsg::TurnComplete(TurnCompleteEvent {
@@ -7383,9 +7401,28 @@ async fn task_finish_with_pending_controller_validation_surfaces_failed_command(
     sess.on_task_finished(Arc::clone(&tc), Some("final answer".to_string()))
         .await;
 
+    let mut saw_visible_validation_message = false;
     let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
             let event = rx.recv().await.expect("channel open");
+            if let EventMsg::ItemCompleted(ItemCompletedEvent {
+                item: TurnItem::AgentMessage(agent_message),
+                ..
+            }) = &event.msg
+            {
+                let text = agent_message
+                    .content
+                    .iter()
+                    .map(|content| match content {
+                        codex_protocol::items::AgentMessageContent::Text { text } => text.as_str(),
+                    })
+                    .collect::<String>();
+                if text.contains("Validation failed for command: `exit 7`")
+                    && text.contains("Exit code: 7")
+                {
+                    saw_visible_validation_message = true;
+                }
+            }
             if matches!(event.msg, EventMsg::TurnComplete(_)) {
                 break event;
             }
@@ -7393,6 +7430,7 @@ async fn task_finish_with_pending_controller_validation_surfaces_failed_command(
     })
     .await
     .expect("expected turn complete event");
+    assert!(saw_visible_validation_message);
     assert!(matches!(
         event.msg,
         EventMsg::TurnComplete(TurnCompleteEvent {

@@ -28,6 +28,7 @@ use crate::hook_runtime::inspect_pending_input;
 use crate::hook_runtime::record_additional_contexts;
 use crate::hook_runtime::record_pending_input;
 use crate::session::session::Session;
+use crate::session::turn::finalize_turn_output_with_hooks;
 use crate::session::turn_context::TurnContext;
 use crate::state::ActiveTurn;
 use crate::state::RunningTask;
@@ -615,10 +616,12 @@ impl Session {
         // before TurnComplete, so the controller-owned final message is
         // the last thing the user sees for this turn.
         if let Some(validation) = controller_validation {
-            last_agent_message = Some(
-                self.run_controller_validation_commands(&turn_context, validation)
-                    .await,
-            );
+            let validation_message = self
+                .run_controller_validation_commands(&turn_context, validation)
+                .await;
+            self.finalize_controller_validation_turn_output(&turn_context, &validation_message)
+                .await;
+            last_agent_message = Some(validation_message);
         }
         // Emit token usage metrics.
         if let Some(token_usage_at_turn_start) = token_usage_at_turn_start {
@@ -839,6 +842,34 @@ impl Session {
         }
 
         validation_success_message().to_string()
+    }
+
+    async fn finalize_controller_validation_turn_output(
+        self: &Arc<Self>,
+        turn_context: &Arc<TurnContext>,
+        validation_message: &str,
+    ) {
+        let controller_result_item = ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: validation_message.to_string(),
+            }],
+            phase: None,
+        };
+        // Controller validation owns terminal visible output for this turn.
+        self.record_response_item_and_emit_turn_item(turn_context.as_ref(), controller_result_item)
+            .await;
+        // Future repair loops must call this finalizer only once after all attempts complete.
+        let _hook_outcome = finalize_turn_output_with_hooks(
+            self,
+            turn_context,
+            Vec::new(),
+            Some(validation_message.to_string()),
+            /*stop_hook_active*/ false,
+            /*allow_stop_continuation*/ false,
+        )
+        .await;
     }
 
     async fn take_active_turn(&self) -> Option<ActiveTurn> {
