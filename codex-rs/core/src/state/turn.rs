@@ -286,6 +286,7 @@ impl TurnState {
         controller_validation: ControllerValidationState,
     ) {
         self.pending_controller_validation = Some(controller_validation);
+        self.controller_validation_active = true;
     }
 
     pub(crate) fn take_pending_controller_validation(
@@ -348,6 +349,7 @@ mod tests {
         };
 
         turn_state.set_pending_controller_validation(state.clone());
+        assert!(turn_state.is_controller_validation_active());
         assert_eq!(turn_state.take_pending_controller_validation(), Some(state));
         assert_eq!(turn_state.take_pending_controller_validation(), None);
     }

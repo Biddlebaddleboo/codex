@@ -3042,6 +3042,7 @@ impl Session {
         let Some(turn_state) = turn_state else {
             return;
         };
+        // Atomic under one lock: pending validation + active ownership.
         turn_state
             .lock()
             .await

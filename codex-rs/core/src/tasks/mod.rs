@@ -55,6 +55,9 @@ use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 
 use codex_features::Feature;
+use codex_protocol::items::AgentMessageContent;
+use codex_protocol::items::AgentMessageItem;
+use codex_protocol::items::TurnItem;
 use codex_protocol::models::ContentItem;
 pub(crate) use compact::CompactTask;
 pub(crate) use regular::RegularTask;
@@ -62,6 +65,7 @@ pub(crate) use review::ReviewTask;
 pub(crate) use user_shell::UserShellCommandMode;
 pub(crate) use user_shell::UserShellCommandTask;
 pub(crate) use user_shell::execute_user_shell_command;
+use uuid::Uuid;
 
 const GRACEFULL_INTERRUPTION_TIMEOUT_MS: u64 = 100;
 
@@ -160,6 +164,15 @@ fn controller_validation_command_completion_message(command: &str, exit_code: i3
         return format!("Build/test command passed: {command} (exit code {exit_code})");
     }
     format!("Build/test command failed: {command} (exit code {exit_code})")
+}
+
+fn controller_validation_status_turn_item(message: String) -> TurnItem {
+    TurnItem::AgentMessage(AgentMessageItem {
+        id: Uuid::new_v4().to_string(),
+        content: vec![AgentMessageContent::Text { text: message }],
+        phase: None,
+        memory_citation: None,
+    })
 }
 
 /// Thin wrapper that exposes the parts of [`Session`] task runners need.
@@ -303,6 +316,11 @@ where
 }
 
 impl Session {
+    async fn emit_controller_validation_status(&self, turn_context: &TurnContext, message: String) {
+        let turn_item = controller_validation_status_turn_item(message);
+        self.emit_turn_item_completed(turn_context, turn_item).await;
+    }
+
     pub async fn spawn_task<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
@@ -844,11 +862,9 @@ impl Session {
         use crate::tools::handlers::run_controller_validation_shell_command;
 
         for command in validation.commands() {
-            self.send_event(
+            self.emit_controller_validation_status(
                 turn_context.as_ref(),
-                EventMsg::Warning(WarningEvent {
-                    message: controller_validation_command_start_message(command),
-                }),
+                controller_validation_command_start_message(command),
             )
             .await;
             match run_controller_validation_shell_command(
@@ -859,26 +875,16 @@ impl Session {
             .await
             {
                 Ok(output) if output.exit_code == 0 => {
-                    self.send_event(
+                    self.emit_controller_validation_status(
                         turn_context.as_ref(),
-                        EventMsg::Warning(WarningEvent {
-                            message: controller_validation_command_completion_message(
-                                command,
-                                output.exit_code,
-                            ),
-                        }),
+                        controller_validation_command_completion_message(command, output.exit_code),
                     )
                     .await;
                 }
                 Ok(output) => {
-                    self.send_event(
+                    self.emit_controller_validation_status(
                         turn_context.as_ref(),
-                        EventMsg::Warning(WarningEvent {
-                            message: controller_validation_command_completion_message(
-                                command,
-                                output.exit_code,
-                            ),
-                        }),
+                        controller_validation_command_completion_message(command, output.exit_code),
                     )
                     .await;
                     // Command failed; short-circuit remaining commands.
@@ -895,11 +901,9 @@ impl Session {
                     };
                 }
                 Err(err) => {
-                    self.send_event(
+                    self.emit_controller_validation_status(
                         turn_context.as_ref(),
-                        EventMsg::Warning(WarningEvent {
-                            message: controller_validation_command_completion_message(command, -1),
-                        }),
+                        controller_validation_command_completion_message(command, -1),
                     )
                     .await;
                     // Runner error; treat as failure with exit code -1.

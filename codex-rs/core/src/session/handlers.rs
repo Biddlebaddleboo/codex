@@ -237,6 +237,7 @@ pub(super) async fn user_input_or_turn_inner(
     };
     let (items, controller_validation) = transform_user_inputs_for_controller_validation(items);
     if let Some(controller_validation) = controller_validation {
+        // Set pending validation + ownership before first model pass.
         sess.set_pending_controller_validation(&sub_id, controller_validation)
             .await;
     }

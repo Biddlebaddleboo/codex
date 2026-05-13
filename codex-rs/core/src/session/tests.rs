@@ -6594,6 +6594,67 @@ async fn handle_output_item_done_suppresses_agent_message_events_when_validation
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn set_pending_controller_validation_sets_active_ownership() {
+    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    let input = vec![UserInput::Text {
+        text: "hello".to_string(),
+        text_elements: Vec::new(),
+    }];
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            input,
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: false,
+            },
+        )
+        .await;
+
+    assert!(
+        !session
+            .has_pending_controller_validation(&turn_context.sub_id)
+            .await
+    );
+    assert!(
+        !session
+            .is_controller_validation_active(&turn_context.sub_id)
+            .await
+    );
+    assert!(
+        !session
+            .controller_validation_owns_turn_finalization(&turn_context.sub_id)
+            .await
+    );
+
+    session
+        .set_pending_controller_validation(
+            &turn_context.sub_id,
+            crate::controller_validation::ControllerValidationState {
+                commands: vec!["cargo test -p codex-core".to_string()],
+                attempt: 0,
+            },
+        )
+        .await;
+
+    assert!(
+        session
+            .has_pending_controller_validation(&turn_context.sub_id)
+            .await
+    );
+    assert!(
+        session
+            .is_controller_validation_active(&turn_context.sub_id)
+            .await
+    );
+    assert!(
+        session
+            .controller_validation_owns_turn_finalization(&turn_context.sub_id)
+            .await
+    );
+}
+
 #[tokio::test]
 async fn build_initial_context_uses_previous_turn_settings_for_realtime_end() {
     let (session, turn_context) = make_session_and_context().await;

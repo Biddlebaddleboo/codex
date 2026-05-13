@@ -2,13 +2,22 @@ use super::controller_validation_command_completion_message;
 use super::controller_validation_command_start_message;
 use super::emit_turn_memory_metric;
 use super::emit_turn_network_proxy_metric;
+use crate::controller_validation::ControllerValidationRunResult;
+use crate::controller_validation::ControllerValidationState;
+use crate::session::tests::make_session_and_context_with_rx;
 use codex_otel::MetricsClient;
 use codex_otel::MetricsConfig;
 use codex_otel::SessionTelemetry;
 use codex_otel::TURN_MEMORY_METRIC;
 use codex_otel::TURN_NETWORK_PROXY_METRIC;
 use codex_protocol::ThreadId;
+use codex_protocol::items::AgentMessageContent;
+use codex_protocol::items::TurnItem;
+use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::WarningEvent;
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 use opentelemetry_sdk::metrics::data::AggregatedMetrics;
@@ -17,6 +26,7 @@ use opentelemetry_sdk::metrics::data::MetricData;
 use opentelemetry_sdk::metrics::data::ResourceMetrics;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use tokio::time::timeout;
 
 fn test_session_telemetry() -> SessionTelemetry {
     let exporter = InMemoryMetricExporter::default();
@@ -196,4 +206,84 @@ fn controller_validation_status_messages_include_command_and_exit_code() {
         controller_validation_command_completion_message(command, 7),
         "Build/test command failed: cargo test -p codex-core (exit code 7)".to_string()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn controller_validation_commands_emit_visible_status_item_events() {
+    let (session, turn_context, rx) = make_session_and_context_with_rx().await;
+    let command = "true";
+    let validation = ControllerValidationState {
+        commands: vec![command.to_string()],
+        attempt: 0,
+    };
+
+    while rx.try_recv().is_ok() {}
+
+    let result = session
+        .run_controller_validation_commands(&turn_context, &validation)
+        .await;
+    assert_eq!(
+        result,
+        ControllerValidationRunResult::Passed {
+            message: "All checks passed.".to_string()
+        }
+    );
+
+    let expected_start = controller_validation_command_start_message(command);
+    let expected_completion = controller_validation_command_completion_message(command, 0);
+    let mut saw_start_item = false;
+    let mut saw_completion_item = false;
+    let mut saw_status_warning = false;
+
+    let _ = timeout(std::time::Duration::from_secs(5), async {
+        while !saw_start_item || !saw_completion_item {
+            let event = rx.recv().await.expect("channel open");
+            match event.msg {
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    item: TurnItem::AgentMessage(agent_message),
+                    ..
+                }) => {
+                    let text = agent_message
+                        .content
+                        .iter()
+                        .map(|content| match content {
+                            AgentMessageContent::Text { text } => text.as_str(),
+                        })
+                        .collect::<String>();
+                    if text == expected_start {
+                        saw_start_item = true;
+                    }
+                    if text == expected_completion {
+                        saw_completion_item = true;
+                    }
+                }
+                EventMsg::Warning(WarningEvent { message }) => {
+                    if message == expected_start || message == expected_completion {
+                        saw_status_warning = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("expected status item events");
+
+    assert!(saw_start_item);
+    assert!(saw_completion_item);
+    assert!(!saw_status_warning);
+
+    let history = session.clone_history().await;
+    assert!(!history.raw_items().iter().any(|item| {
+        matches!(
+            item,
+            ResponseItem::Message { role, content, .. }
+                if role == "assistant"
+                    && content.iter().any(|part| matches!(
+                        part,
+                        codex_protocol::models::ContentItem::OutputText { text }
+                            if text == &expected_start || text == &expected_completion
+                    ))
+        )
+    }));
 }
