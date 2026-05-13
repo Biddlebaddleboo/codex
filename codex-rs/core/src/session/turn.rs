@@ -347,7 +347,7 @@ pub(crate) async fn run_turn(
                 if !needs_follow_up {
                     last_agent_message = sampling_request_last_agent_message;
                     if sess
-                        .has_pending_controller_validation(&turn_context.sub_id)
+                        .controller_validation_owns_turn_finalization(&turn_context.sub_id)
                         .await
                     {
                         // Controller validation owns terminal output and deferred Stop/AfterAgent.
@@ -1677,7 +1677,7 @@ async fn try_run_sampling_request(
     let plan_mode = turn_context.collaboration_mode.mode == ModeKind::Plan;
     // Controller-managed validation uses this turn-wide backstop to keep assistant text hidden.
     let suppress_controller_validation_text = sess
-        .has_pending_controller_validation(&turn_context.sub_id)
+        .controller_validation_owns_turn_finalization(&turn_context.sub_id)
         .await;
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
     let mut plan_mode_state = plan_mode.then(|| PlanModeStreamState::new(&turn_context.sub_id));

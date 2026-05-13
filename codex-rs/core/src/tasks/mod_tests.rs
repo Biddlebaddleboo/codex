@@ -1,3 +1,5 @@
+use super::controller_validation_command_completion_message;
+use super::controller_validation_command_start_message;
 use super::emit_turn_memory_metric;
 use super::emit_turn_network_proxy_metric;
 use codex_otel::MetricsClient;
@@ -176,5 +178,22 @@ fn emit_turn_memory_metric_records_config_disabled_without_citations() {
             ("has_citations".to_string(), "false".to_string()),
             ("read_allowed".to_string(), "false".to_string()),
         ])
+    );
+}
+
+#[test]
+fn controller_validation_status_messages_include_command_and_exit_code() {
+    let command = "cargo test -p codex-core";
+    assert_eq!(
+        controller_validation_command_start_message(command),
+        "Running build/test command: cargo test -p codex-core".to_string()
+    );
+    assert_eq!(
+        controller_validation_command_completion_message(command, 0),
+        "Build/test command passed: cargo test -p codex-core (exit code 0)".to_string()
+    );
+    assert_eq!(
+        controller_validation_command_completion_message(command, 7),
+        "Build/test command failed: cargo test -p codex-core (exit code 7)".to_string()
     );
 }

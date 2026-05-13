@@ -6530,6 +6530,70 @@ async fn handle_output_item_done_suppresses_agent_message_events_when_validation
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_output_item_done_suppresses_agent_message_events_when_validation_active() {
+    let (session, turn_context, rx) = make_session_and_context_with_rx().await;
+    let input = vec![UserInput::Text {
+        text: "hello".to_string(),
+        text_elements: Vec::new(),
+    }];
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            input,
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: false,
+            },
+        )
+        .await;
+
+    while rx.try_recv().is_ok() {}
+
+    session
+        .set_controller_validation_active(&turn_context.sub_id, true)
+        .await;
+    assert!(
+        session
+            .is_controller_validation_active(&turn_context.sub_id)
+            .await
+    );
+
+    let item = assistant_message("final answer");
+    let mut ctx = HandleOutputCtx {
+        sess: Arc::clone(&session),
+        turn_context: Arc::clone(&turn_context),
+        tool_runtime: test_tool_runtime(Arc::clone(&session), Arc::clone(&turn_context)),
+        cancellation_token: CancellationToken::new(),
+    };
+
+    let output =
+        handle_output_item_done(&mut ctx, item.clone(), /*previously_active_item*/ None)
+            .await
+            .expect("assistant message should succeed");
+
+    assert_eq!(output.last_agent_message, None);
+    let history = session.clone_history().await;
+    assert!(
+        history
+            .raw_items()
+            .iter()
+            .any(|history_item| history_item == &item)
+    );
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("expected raw response item event")
+        .expect("channel open");
+    assert!(matches!(event.msg, EventMsg::RawResponseItem(_)));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(250), rx.recv())
+            .await
+            .is_err(),
+        "unexpected visible assistant event"
+    );
+}
+
 #[tokio::test]
 async fn build_initial_context_uses_previous_turn_settings_for_realtime_end() {
     let (session, turn_context) = make_session_and_context().await;
@@ -7468,6 +7532,40 @@ async fn task_finish_with_pending_controller_validation_without_terminal_result_
     assert!(
         maybe_event.is_err(),
         "pending validation without terminal result should not emit TurnComplete"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_finish_with_active_controller_validation_without_terminal_result_skips_turn_complete()
+{
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    let input = vec![UserInput::Text {
+        text: "hello".to_string(),
+        text_elements: Vec::new(),
+    }];
+    sess.spawn_task(
+        Arc::clone(&tc),
+        input,
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+
+    while rx.try_recv().is_ok() {}
+
+    sess.set_controller_validation_active(&tc.sub_id, true)
+        .await;
+    assert!(sess.is_controller_validation_active(&tc.sub_id).await);
+
+    sess.on_task_finished(Arc::clone(&tc), Some("final answer".to_string()))
+        .await;
+
+    let maybe_event = tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await;
+    assert!(
+        maybe_event.is_err(),
+        "active validation without terminal result should not emit TurnComplete"
     );
 }
 

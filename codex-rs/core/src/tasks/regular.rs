@@ -125,6 +125,10 @@ impl SessionTask for RegularTask {
             .instrument(run_turn_span.clone())
             .await;
             if let Some(validation) = sess.take_pending_controller_validation(&ctx.sub_id).await {
+                // Controller now owns turn finalization; defer Stop/AfterAgent
+                // until terminal controller-validation result is finalized.
+                sess.set_controller_validation_active(&ctx.sub_id, true)
+                    .await;
                 let run_result = sess
                     .run_controller_validation_commands(&ctx, &validation)
                     .await;

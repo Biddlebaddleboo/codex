@@ -229,7 +229,7 @@ pub(crate) async fn handle_output_item_done(
     let plan_mode = ctx.turn_context.collaboration_mode.mode == ModeKind::Plan;
     let suppress_controller_validation_text = ctx
         .sess
-        .has_pending_controller_validation(&ctx.turn_context.sub_id)
+        .controller_validation_owns_turn_finalization(&ctx.turn_context.sub_id)
         .await;
 
     match ToolRouter::build_tool_call(ctx.sess.as_ref(), item.clone()).await {

@@ -3082,6 +3082,36 @@ impl Session {
             .set_terminal_controller_validation_result(result);
     }
 
+    pub(crate) async fn set_controller_validation_active(&self, sub_id: &str, active: bool) {
+        let turn_state = self.turn_state_for_sub_id(sub_id).await;
+        let Some(turn_state) = turn_state else {
+            return;
+        };
+        turn_state
+            .lock()
+            .await
+            .set_controller_validation_active(active);
+    }
+
+    pub(crate) async fn is_controller_validation_active(&self, sub_id: &str) -> bool {
+        let turn_state = self.turn_state_for_sub_id(sub_id).await;
+        let Some(turn_state) = turn_state else {
+            return false;
+        };
+        turn_state.lock().await.is_controller_validation_active()
+    }
+
+    pub(crate) async fn controller_validation_owns_turn_finalization(&self, sub_id: &str) -> bool {
+        let turn_state = self.turn_state_for_sub_id(sub_id).await;
+        let Some(turn_state) = turn_state else {
+            return false;
+        };
+        turn_state
+            .lock()
+            .await
+            .controller_validation_owns_turn_finalization()
+    }
+
     async fn turn_state_for_sub_id(
         &self,
         sub_id: &str,

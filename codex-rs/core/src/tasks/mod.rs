@@ -151,6 +151,17 @@ fn bool_tag(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
+fn controller_validation_command_start_message(command: &str) -> String {
+    format!("Running build/test command: {command}")
+}
+
+fn controller_validation_command_completion_message(command: &str, exit_code: i32) -> String {
+    if exit_code == 0 {
+        return format!("Build/test command passed: {command} (exit code {exit_code})");
+    }
+    format!("Build/test command failed: {command} (exit code {exit_code})")
+}
+
 /// Thin wrapper that exposes the parts of [`Session`] task runners need.
 #[derive(Clone)]
 pub(crate) struct SessionTaskContext {
@@ -571,7 +582,7 @@ impl Session {
         let mut turn_had_memory_citation = false;
         let mut turn_tool_calls = 0_u64;
         let mut records_turn_token_usage_on_span = false;
-        let mut has_pending_controller_validation = false;
+        let mut controller_validation_owns_turn_finalization = false;
         let mut terminal_controller_validation_result: Option<String> = None;
         let turn_state = {
             let mut active = self.active_turn.lock().await;
@@ -594,10 +605,10 @@ impl Session {
             turn_had_memory_citation = ts.has_memory_citation;
             turn_tool_calls = ts.tool_calls;
             token_usage_at_turn_start = Some(ts.token_usage_at_turn_start.clone());
-            if ts.has_pending_controller_validation() {
-                // Validation is controller-managed; withhold final agent text for this turn.
+            if ts.controller_validation_owns_turn_finalization() {
+                // Controller owns finalization; withhold model final text.
                 last_agent_message = None;
-                has_pending_controller_validation = true;
+                controller_validation_owns_turn_finalization = true;
             }
             terminal_controller_validation_result = ts.take_terminal_controller_validation_result();
         }
@@ -622,10 +633,16 @@ impl Session {
             last_agent_message = self
                 .finalize_controller_validation_turn_output(&turn_context, &validation_message)
                 .await;
-        } else if has_pending_controller_validation {
+            if let Some(turn_state) = turn_state.as_ref() {
+                turn_state
+                    .lock()
+                    .await
+                    .set_controller_validation_active(false);
+            }
+        } else if controller_validation_owns_turn_finalization {
             warn!(
                 turn_id = %turn_context.sub_id,
-                "pending controller validation without terminal result; skip TurnComplete"
+                "controller validation still owns turn without terminal result; skip TurnComplete"
             );
             if should_clear_active_turn {
                 let mut active = self.active_turn.lock().await;
@@ -827,6 +844,13 @@ impl Session {
         use crate::tools::handlers::run_controller_validation_shell_command;
 
         for command in validation.commands() {
+            self.send_event(
+                turn_context.as_ref(),
+                EventMsg::Warning(WarningEvent {
+                    message: controller_validation_command_start_message(command),
+                }),
+            )
+            .await;
             match run_controller_validation_shell_command(
                 Arc::clone(self),
                 Arc::clone(turn_context),
@@ -835,9 +859,28 @@ impl Session {
             .await
             {
                 Ok(output) if output.exit_code == 0 => {
-                    // Command passed; continue to the next.
+                    self.send_event(
+                        turn_context.as_ref(),
+                        EventMsg::Warning(WarningEvent {
+                            message: controller_validation_command_completion_message(
+                                command,
+                                output.exit_code,
+                            ),
+                        }),
+                    )
+                    .await;
                 }
                 Ok(output) => {
+                    self.send_event(
+                        turn_context.as_ref(),
+                        EventMsg::Warning(WarningEvent {
+                            message: controller_validation_command_completion_message(
+                                command,
+                                output.exit_code,
+                            ),
+                        }),
+                    )
+                    .await;
                     // Command failed; short-circuit remaining commands.
                     let message = compact_validation_failure_summary(
                         command,
@@ -852,6 +895,13 @@ impl Session {
                     };
                 }
                 Err(err) => {
+                    self.send_event(
+                        turn_context.as_ref(),
+                        EventMsg::Warning(WarningEvent {
+                            message: controller_validation_command_completion_message(command, -1),
+                        }),
+                    )
+                    .await;
                     // Runner error; treat as failure with exit code -1.
                     let message = compact_validation_failure_summary(
                         command,

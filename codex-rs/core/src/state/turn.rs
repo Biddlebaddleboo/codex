@@ -117,6 +117,7 @@ pub(crate) struct TurnState {
     pending_input: Vec<ResponseInputItem>,
     pending_controller_validation: Option<ControllerValidationState>,
     terminal_controller_validation_result: Option<String>,
+    controller_validation_active: bool,
     mailbox_delivery_phase: MailboxDeliveryPhase,
     granted_permissions: Option<AdditionalPermissionProfile>,
     strict_auto_review_enabled: bool,
@@ -156,6 +157,7 @@ impl TurnState {
         self.pending_input.clear();
         self.pending_controller_validation = None;
         self.terminal_controller_validation_result = None;
+        self.controller_validation_active = false;
     }
 
     pub(crate) fn insert_pending_request_permissions(
@@ -307,6 +309,20 @@ impl TurnState {
     pub(crate) fn has_terminal_controller_validation_result(&self) -> bool {
         self.terminal_controller_validation_result.is_some()
     }
+
+    pub(crate) fn set_controller_validation_active(&mut self, active: bool) {
+        self.controller_validation_active = active;
+    }
+
+    pub(crate) fn is_controller_validation_active(&self) -> bool {
+        self.controller_validation_active
+    }
+
+    pub(crate) fn controller_validation_owns_turn_finalization(&self) -> bool {
+        self.pending_controller_validation.is_some()
+            || self.controller_validation_active
+            || self.terminal_controller_validation_result.is_some()
+    }
 }
 
 impl ActiveTurn {
@@ -351,5 +367,35 @@ mod tests {
             turn_state.take_terminal_controller_validation_result(),
             None
         );
+    }
+
+    #[test]
+    fn controller_validation_active_state_round_trips() {
+        let mut turn_state = TurnState::default();
+        assert!(!turn_state.is_controller_validation_active());
+        turn_state.set_controller_validation_active(true);
+        assert!(turn_state.is_controller_validation_active());
+        turn_state.set_controller_validation_active(false);
+        assert!(!turn_state.is_controller_validation_active());
+    }
+
+    #[test]
+    fn controller_validation_owns_turn_finalization_when_any_signal_is_set() {
+        let mut turn_state = TurnState::default();
+        assert!(!turn_state.controller_validation_owns_turn_finalization());
+
+        turn_state.set_controller_validation_active(true);
+        assert!(turn_state.controller_validation_owns_turn_finalization());
+
+        turn_state.set_controller_validation_active(false);
+        turn_state.set_pending_controller_validation(ControllerValidationState {
+            commands: vec!["cargo test -p codex-core".to_string()],
+            attempt: 0,
+        });
+        assert!(turn_state.controller_validation_owns_turn_finalization());
+
+        turn_state.take_pending_controller_validation();
+        turn_state.set_terminal_controller_validation_result("done".to_string());
+        assert!(turn_state.controller_validation_owns_turn_finalization());
     }
 }
