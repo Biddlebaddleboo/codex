@@ -141,8 +141,24 @@ impl SessionTask for RegularTask {
                         failure_summary,
                         repair_prompt,
                     } => {
-                        sess.set_pending_controller_validation(&ctx.sub_id, validation)
+                        if !sess
+                            .set_pending_controller_validation(&ctx.sub_id, validation)
+                            .await
+                        {
+                            warn!(
+                                turn_id = %ctx.sub_id,
+                                "failed to queue controller validation retry state; finalize terminal failure"
+                            );
+                            let failure_message = format!(
+                                "{failure_summary}\n\nRepair prompt handoff failed: retry validation state was rejected for active turn."
+                            );
+                            sess.set_terminal_controller_validation_result(
+                                &ctx.sub_id,
+                                failure_message,
+                            )
                             .await;
+                            return None;
+                        }
                         let repair_prompt_item = ResponseInputItem::Message {
                             role: "developer".to_string(),
                             content: vec![ContentItem::InputText {

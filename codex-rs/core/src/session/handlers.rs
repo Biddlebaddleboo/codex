@@ -21,6 +21,7 @@ use crate::realtime_conversation::prefix_realtime_v2_text;
 use crate::review_prompts::resolve_review_request;
 use crate::session::spawn_review_thread;
 use crate::tasks::CompactTask;
+use crate::tasks::StartTaskOptions;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
@@ -236,11 +237,6 @@ pub(super) async fn user_input_or_turn_inner(
         return;
     };
     let (items, controller_validation) = transform_user_inputs_for_controller_validation(items);
-    if let Some(controller_validation) = controller_validation {
-        // Set pending validation + ownership before first model pass.
-        sess.set_pending_controller_validation(&sub_id, controller_validation)
-            .await;
-    }
     sess.maybe_emit_unknown_model_warning_for_turn(current_context.as_ref())
         .await;
     let accepted_items = match sess
@@ -251,7 +247,18 @@ pub(super) async fn user_input_or_turn_inner(
         )
         .await
     {
-        Ok(_) => {
+        Ok(active_turn_id) => {
+            if let Some(controller_validation) = controller_validation
+                && !sess
+                    .set_pending_controller_validation(&active_turn_id, controller_validation)
+                    .await
+            {
+                warn!(
+                    requested_sub_id = %sub_id,
+                    active_turn_id = %active_turn_id,
+                    "failed to attach pending controller validation to active turn"
+                );
+            }
             current_context.session_telemetry.user_prompt(&items);
             Some(items)
         }
@@ -263,10 +270,13 @@ pub(super) async fn user_input_or_turn_inner(
             }
             current_context.session_telemetry.user_prompt(&items);
             let accepted_items = items.clone();
-            sess.spawn_task(
+            sess.spawn_task_with_options(
                 Arc::clone(&current_context),
                 items,
                 crate::tasks::RegularTask::new(),
+                StartTaskOptions {
+                    controller_validation,
+                },
             )
             .await;
             Some(accepted_items)

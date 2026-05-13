@@ -89,6 +89,11 @@ impl InterruptedTurnHistoryMarker {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct StartTaskOptions {
+    pub(crate) controller_validation: Option<ControllerValidationState>,
+}
+
 /// Shared model-visible marker used by both the real interrupt path and
 /// interrupted fork snapshots.
 pub(crate) fn interrupted_turn_history_marker(
@@ -327,9 +332,21 @@ impl Session {
         input: Vec<UserInput>,
         task: T,
     ) {
+        self.spawn_task_with_options(turn_context, input, task, StartTaskOptions::default())
+            .await;
+    }
+
+    pub(crate) async fn spawn_task_with_options<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<UserInput>,
+        task: T,
+        options: StartTaskOptions,
+    ) {
         self.abort_all_tasks(TurnAbortReason::Replaced).await;
         self.clear_connector_selection().await;
-        self.start_task(turn_context, input, task).await;
+        self.start_task_with_options(turn_context, input, task, options)
+            .await;
     }
 
     pub(crate) async fn start_task<T: SessionTask>(
@@ -337,6 +354,17 @@ impl Session {
         turn_context: Arc<TurnContext>,
         input: Vec<UserInput>,
         task: T,
+    ) {
+        self.start_task_with_options(turn_context, input, task, StartTaskOptions::default())
+            .await;
+    }
+
+    pub(crate) async fn start_task_with_options<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<UserInput>,
+        task: T,
+        options: StartTaskOptions,
     ) {
         let task: Arc<dyn AnySessionTask> = Arc::new(task);
         let task_kind = task.kind();
@@ -385,6 +413,9 @@ impl Session {
             }
             for item in mailbox_items {
                 turn_state.push_pending_input(item);
+            }
+            if let Some(controller_validation) = options.controller_validation {
+                turn_state.set_pending_controller_validation(controller_validation);
             }
         }
 

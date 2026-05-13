@@ -5,6 +5,7 @@ use crate::config::ConfigBuilder;
 use crate::config::test_config;
 use crate::context::ContextualUserFragment;
 use crate::context::TurnAborted;
+use crate::controller_validation::transform_user_inputs_for_controller_validation;
 use crate::exec::ExecCapturePolicy;
 use crate::function_tool::FunctionCallError;
 use crate::shell::default_user_shell;
@@ -63,6 +64,7 @@ use crate::state::ActiveTurn;
 use crate::state::TaskKind;
 use crate::tasks::SessionTask;
 use crate::tasks::SessionTaskContext;
+use crate::tasks::StartTaskOptions;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::execute_user_shell_command;
 use crate::tools::ToolRouter;
@@ -6628,12 +6630,82 @@ async fn set_pending_controller_validation_sets_active_ownership() {
             .await
     );
 
-    session
+    assert!(
+        session
+            .set_pending_controller_validation(
+                &turn_context.sub_id,
+                crate::controller_validation::ControllerValidationState {
+                    commands: vec!["cargo test -p codex-core".to_string()],
+                    attempt: 0,
+                },
+            )
+            .await
+    );
+
+    assert!(
+        session
+            .has_pending_controller_validation(&turn_context.sub_id)
+            .await
+    );
+    assert!(
+        session
+            .is_controller_validation_active(&turn_context.sub_id)
+            .await
+    );
+    assert!(
+        session
+            .controller_validation_owns_turn_finalization(&turn_context.sub_id)
+            .await
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn set_pending_controller_validation_returns_false_without_turn_state() {
+    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    let set = session
         .set_pending_controller_validation(
             &turn_context.sub_id,
             crate::controller_validation::ControllerValidationState {
                 commands: vec!["cargo test -p codex-core".to_string()],
                 attempt: 0,
+            },
+        )
+        .await;
+    assert!(!set);
+    assert!(
+        !session
+            .has_pending_controller_validation(&turn_context.sub_id)
+            .await
+    );
+    assert!(
+        !session
+            .controller_validation_owns_turn_finalization(&turn_context.sub_id)
+            .await
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_task_with_controller_validation_preserves_pending_state_for_new_turn() {
+    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    let input_text = "Build/test commands:\n- cargo test -p codex-core\nSummary checklist:\n- done";
+    let (items, controller_validation) =
+        transform_user_inputs_for_controller_validation(vec![UserInput::Text {
+            text: input_text.to_string(),
+            text_elements: Vec::new(),
+        }]);
+    assert_eq!(items.len(), 1);
+    let controller_validation = controller_validation.expect("validation should parse");
+
+    session
+        .spawn_task_with_options(
+            Arc::clone(&turn_context),
+            items,
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: false,
+            },
+            StartTaskOptions {
+                controller_validation: Some(controller_validation),
             },
         )
         .await;

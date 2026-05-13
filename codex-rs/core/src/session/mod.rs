@@ -3037,16 +3037,17 @@ impl Session {
         &self,
         sub_id: &str,
         controller_validation: ControllerValidationState,
-    ) {
+    ) -> bool {
         let turn_state = self.turn_state_for_sub_id(sub_id).await;
         let Some(turn_state) = turn_state else {
-            return;
+            return false;
         };
         // Atomic under one lock: pending validation + active ownership.
         turn_state
             .lock()
             .await
             .set_pending_controller_validation(controller_validation);
+        true
     }
 
     pub(crate) async fn has_pending_controller_validation(&self, sub_id: &str) -> bool {
