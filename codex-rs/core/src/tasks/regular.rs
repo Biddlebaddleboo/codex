@@ -2,15 +2,21 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::controller_validation::ControllerValidationRunResult;
+use crate::controller_validation::ControllerValidationState;
+use crate::controller_validation::build_validation_repair_prompt;
 use crate::session::turn::run_turn;
 use crate::session::turn_context::TurnContext;
 use crate::session_startup_prewarm::SessionStartupPrewarmResolution;
 use crate::state::TaskKind;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseInputItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::user_input::UserInput;
 use tracing::Instrument;
 use tracing::trace_span;
+use tracing::warn;
 
 use super::SessionTask;
 use super::SessionTaskContext;
@@ -18,9 +24,47 @@ use super::SessionTaskContext;
 #[derive(Default)]
 pub(crate) struct RegularTask;
 
+const MAX_CONTROLLER_VALIDATION_REPAIR_ATTEMPTS: u8 = 2;
+
+enum ControllerValidationAction {
+    Retry {
+        validation: ControllerValidationState,
+        repair_prompt: String,
+    },
+    Terminal {
+        message: String,
+    },
+}
+
 impl RegularTask {
     pub(crate) fn new() -> Self {
         Self
+    }
+}
+
+fn next_controller_validation_action(
+    mut validation: ControllerValidationState,
+    run_result: ControllerValidationRunResult,
+) -> ControllerValidationAction {
+    match run_result {
+        ControllerValidationRunResult::Passed { message } => {
+            ControllerValidationAction::Terminal { message }
+        }
+        ControllerValidationRunResult::Failed {
+            message,
+            failed_command,
+            ..
+        } => {
+            if validation.has_attempts_remaining(MAX_CONTROLLER_VALIDATION_REPAIR_ATTEMPTS) {
+                validation.increment_attempt();
+                validation.failed_command_first(&failed_command);
+                return ControllerValidationAction::Retry {
+                    validation,
+                    repair_prompt: build_validation_repair_prompt(&message),
+                };
+            }
+            ControllerValidationAction::Terminal { message }
+        }
     }
 }
 
@@ -78,10 +122,112 @@ impl SessionTask for RegularTask {
             )
             .instrument(run_turn_span.clone())
             .await;
+            if let Some(validation) = sess.take_pending_controller_validation(&ctx.sub_id).await {
+                let run_result = sess
+                    .run_controller_validation_commands(&ctx, &validation)
+                    .await;
+                match next_controller_validation_action(validation, run_result) {
+                    // Repair attempts are same-turn subphases. Do not use
+                    // `start_task(...)` or emit extra TurnStarted/TurnComplete.
+                    ControllerValidationAction::Retry {
+                        validation,
+                        repair_prompt,
+                    } => {
+                        sess.set_pending_controller_validation(&ctx.sub_id, validation)
+                            .await;
+                        let repair_prompt_item = ResponseInputItem::Message {
+                            role: "developer".to_string(),
+                            content: vec![ContentItem::InputText {
+                                text: repair_prompt,
+                            }],
+                            phase: None,
+                        };
+                        if let Err(items) =
+                            sess.inject_response_items(vec![repair_prompt_item]).await
+                        {
+                            warn!(
+                                turn_id = %ctx.sub_id,
+                                count = items.len(),
+                                "failed to inject controller validation repair prompt; finalize terminal failure"
+                            );
+                            let failure_message = "Validation failed to queue same-turn repair prompt. Aborting controller validation retries.".to_string();
+                            sess.set_terminal_controller_validation_result(
+                                &ctx.sub_id,
+                                failure_message,
+                            )
+                            .await;
+                            return None;
+                        }
+                        next_input = Vec::new();
+                        continue;
+                    }
+                    // Stop/AfterAgent run once at terminal controller result in
+                    // `on_task_finished(...)`.
+                    ControllerValidationAction::Terminal { message } => {
+                        sess.set_terminal_controller_validation_result(&ctx.sub_id, message)
+                            .await;
+                        return None;
+                    }
+                }
+            }
             if !sess.has_pending_input().await {
                 return last_agent_message;
             }
             next_input = Vec::new();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn failed_validation_with_attempts_remaining_increments_attempt_and_moves_failed_command_first()
+    {
+        let state = ControllerValidationState {
+            commands: vec!["c1".to_string(), "c2".to_string(), "c3".to_string()],
+            attempt: 0,
+        };
+        let run_result = ControllerValidationRunResult::Failed {
+            message: "fail".to_string(),
+            failed_command: "c2".to_string(),
+            exit_code: 7,
+        };
+
+        let action = next_controller_validation_action(state, run_result);
+        let ControllerValidationAction::Retry {
+            validation,
+            repair_prompt,
+        } = action
+        else {
+            panic!("expected retry");
+        };
+        assert_eq!(validation.attempt(), 1);
+        assert_eq!(
+            validation.commands(),
+            &["c2".to_string(), "c1".to_string(), "c3".to_string()]
+        );
+        assert_eq!(repair_prompt, build_validation_repair_prompt("fail"));
+    }
+
+    #[test]
+    fn failed_validation_with_exhausted_attempts_is_terminal() {
+        let state = ControllerValidationState {
+            commands: vec!["c1".to_string()],
+            attempt: 2,
+        };
+        let run_result = ControllerValidationRunResult::Failed {
+            message: "final fail".to_string(),
+            failed_command: "c1".to_string(),
+            exit_code: 1,
+        };
+
+        let action = next_controller_validation_action(state, run_result);
+        let ControllerValidationAction::Terminal { message } = action else {
+            panic!("expected terminal");
+        };
+        assert_eq!(message, "final fail".to_string());
     }
 }

@@ -42,6 +42,18 @@ pub(crate) fn validation_success_message() -> &'static str {
     "All checks passed."
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ControllerValidationRunResult {
+    Passed {
+        message: String,
+    },
+    Failed {
+        message: String,
+        failed_command: String,
+        exit_code: i32,
+    },
+}
+
 pub(crate) fn compact_validation_failure_summary(
     command: &str,
     exit_code: i32,

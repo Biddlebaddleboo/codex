@@ -7301,7 +7301,7 @@ async fn task_finish_keeps_last_agent_message_without_controller_validation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn task_finish_with_pending_controller_validation_withholds_last_agent_message() {
+async fn task_finish_with_terminal_controller_validation_result_uses_controller_message() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
     let input = vec![UserInput::Text {
         text: "hello".to_string(),
@@ -7319,14 +7319,8 @@ async fn task_finish_with_pending_controller_validation_withholds_last_agent_mes
 
     while rx.try_recv().is_ok() {}
 
-    sess.set_pending_controller_validation(
-        &tc.sub_id,
-        crate::controller_validation::ControllerValidationState {
-            commands: vec!["exit 0".to_string()],
-            attempt: 0,
-        },
-    )
-    .await;
+    sess.set_terminal_controller_validation_result(&tc.sub_id, "All checks passed.".to_string())
+        .await;
 
     sess.on_task_finished(Arc::clone(&tc), Some("final answer".to_string()))
         .await;
@@ -7371,7 +7365,8 @@ async fn task_finish_with_pending_controller_validation_withholds_last_agent_mes
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn task_finish_with_pending_controller_validation_surfaces_failed_command() {
+async fn task_finish_with_pending_controller_validation_without_terminal_result_skips_turn_complete()
+ {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
     let input = vec![UserInput::Text {
         text: "hello".to_string(),
@@ -7401,47 +7396,11 @@ async fn task_finish_with_pending_controller_validation_surfaces_failed_command(
     sess.on_task_finished(Arc::clone(&tc), Some("final answer".to_string()))
         .await;
 
-    let mut saw_visible_validation_message = false;
-    let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let event = rx.recv().await.expect("channel open");
-            if let EventMsg::ItemCompleted(ItemCompletedEvent {
-                item: TurnItem::AgentMessage(agent_message),
-                ..
-            }) = &event.msg
-            {
-                let text = agent_message
-                    .content
-                    .iter()
-                    .map(|content| match content {
-                        codex_protocol::items::AgentMessageContent::Text { text } => text.as_str(),
-                    })
-                    .collect::<String>();
-                if text.contains("Validation failed for command: `exit 7`")
-                    && text.contains("Exit code: 7")
-                {
-                    saw_visible_validation_message = true;
-                }
-            }
-            if matches!(event.msg, EventMsg::TurnComplete(_)) {
-                break event;
-            }
-        }
-    })
-    .await
-    .expect("expected turn complete event");
-    assert!(saw_visible_validation_message);
-    assert!(matches!(
-        event.msg,
-        EventMsg::TurnComplete(TurnCompleteEvent {
-            turn_id,
-            last_agent_message: Some(ref message),
-            time_to_first_token_ms: None,
-            ..
-        }) if turn_id == tc.sub_id
-            && message.contains("Validation failed for command: `exit 7`")
-            && message.contains("Exit code: 7")
-    ));
+    let maybe_event = tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await;
+    assert!(
+        maybe_event.is_err(),
+        "pending validation without terminal result should not emit TurnComplete"
+    );
 }
 
 #[tokio::test]

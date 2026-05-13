@@ -1,3 +1,4 @@
+use crate::controller_validation::ControllerValidationRunResult;
 use crate::controller_validation::ControllerValidationState;
 mod compact;
 mod regular;
@@ -570,7 +571,8 @@ impl Session {
         let mut turn_had_memory_citation = false;
         let mut turn_tool_calls = 0_u64;
         let mut records_turn_token_usage_on_span = false;
-        let mut controller_validation: Option<ControllerValidationState> = None;
+        let mut has_pending_controller_validation = false;
+        let mut terminal_controller_validation_result: Option<String> = None;
         let turn_state = {
             let mut active = self.active_turn.lock().await;
             if let Some(at) = active.as_mut()
@@ -595,8 +597,9 @@ impl Session {
             if ts.has_pending_controller_validation() {
                 // Validation is controller-managed; withhold final agent text for this turn.
                 last_agent_message = None;
-                controller_validation = ts.take_pending_controller_validation();
+                has_pending_controller_validation = true;
             }
+            terminal_controller_validation_result = ts.take_terminal_controller_validation_result();
         }
         if !pending_input.is_empty() {
             for pending_input_item in pending_input {
@@ -612,16 +615,30 @@ impl Session {
                 }
             }
         }
-        // Run controller validation after pending input processing but
-        // before TurnComplete, so the controller-owned final message is
-        // the last thing the user sees for this turn.
-        if let Some(validation) = controller_validation {
-            let validation_message = self
-                .run_controller_validation_commands(&turn_context, validation)
-                .await;
+        // Controller validation execution runs in `RegularTask::run` as
+        // same-turn subphase repair loop. `on_task_finished` only finalizes
+        // terminal controller result once.
+        if let Some(validation_message) = terminal_controller_validation_result {
             last_agent_message = self
                 .finalize_controller_validation_turn_output(&turn_context, &validation_message)
                 .await;
+        } else if has_pending_controller_validation {
+            warn!(
+                turn_id = %turn_context.sub_id,
+                "pending controller validation without terminal result; skip TurnComplete"
+            );
+            if should_clear_active_turn {
+                let mut active = self.active_turn.lock().await;
+                if let Some(active_turn) = active.as_ref()
+                    && active_turn.tasks.is_empty()
+                    && turn_state
+                        .as_ref()
+                        .is_some_and(|turn_state| Arc::ptr_eq(&active_turn.turn_state, turn_state))
+                {
+                    *active = None;
+                }
+            }
+            return;
         }
         // Emit token usage metrics.
         if let Some(token_usage_at_turn_start) = token_usage_at_turn_start {
@@ -803,8 +820,8 @@ impl Session {
     async fn run_controller_validation_commands(
         self: &Arc<Self>,
         turn_context: &Arc<TurnContext>,
-        validation: ControllerValidationState,
-    ) -> String {
+        validation: &ControllerValidationState,
+    ) -> ControllerValidationRunResult {
         use crate::controller_validation::compact_validation_failure_summary;
         use crate::controller_validation::validation_success_message;
         use crate::tools::handlers::run_controller_validation_shell_command;
@@ -822,26 +839,38 @@ impl Session {
                 }
                 Ok(output) => {
                     // Command failed; short-circuit remaining commands.
-                    return compact_validation_failure_summary(
+                    let message = compact_validation_failure_summary(
                         command,
                         output.exit_code,
                         &output.aggregated_output.text,
                         /*max_lines*/ 20,
                     );
+                    return ControllerValidationRunResult::Failed {
+                        message,
+                        failed_command: command.to_string(),
+                        exit_code: output.exit_code,
+                    };
                 }
                 Err(err) => {
                     // Runner error; treat as failure with exit code -1.
-                    return compact_validation_failure_summary(
+                    let message = compact_validation_failure_summary(
                         command,
                         -1,
                         &format!("{err:?}"),
                         /*max_lines*/ 20,
                     );
+                    return ControllerValidationRunResult::Failed {
+                        message,
+                        failed_command: command.to_string(),
+                        exit_code: -1,
+                    };
                 }
             }
         }
 
-        validation_success_message().to_string()
+        ControllerValidationRunResult::Passed {
+            message: validation_success_message().to_string(),
+        }
     }
 
     async fn finalize_controller_validation_turn_output(

@@ -116,6 +116,7 @@ pub(crate) struct TurnState {
     pending_dynamic_tools: HashMap<String, oneshot::Sender<DynamicToolResponse>>,
     pending_input: Vec<ResponseInputItem>,
     pending_controller_validation: Option<ControllerValidationState>,
+    terminal_controller_validation_result: Option<String>,
     mailbox_delivery_phase: MailboxDeliveryPhase,
     granted_permissions: Option<AdditionalPermissionProfile>,
     strict_auto_review_enabled: bool,
@@ -154,6 +155,7 @@ impl TurnState {
         self.pending_dynamic_tools.clear();
         self.pending_input.clear();
         self.pending_controller_validation = None;
+        self.terminal_controller_validation_result = None;
     }
 
     pub(crate) fn insert_pending_request_permissions(
@@ -293,6 +295,18 @@ impl TurnState {
     pub(crate) fn has_pending_controller_validation(&self) -> bool {
         self.pending_controller_validation.is_some()
     }
+
+    pub(crate) fn set_terminal_controller_validation_result(&mut self, result: String) {
+        self.terminal_controller_validation_result = Some(result);
+    }
+
+    pub(crate) fn take_terminal_controller_validation_result(&mut self) -> Option<String> {
+        self.terminal_controller_validation_result.take()
+    }
+
+    pub(crate) fn has_terminal_controller_validation_result(&self) -> bool {
+        self.terminal_controller_validation_result.is_some()
+    }
 }
 
 impl ActiveTurn {
@@ -320,5 +334,22 @@ mod tests {
         turn_state.set_pending_controller_validation(state.clone());
         assert_eq!(turn_state.take_pending_controller_validation(), Some(state));
         assert_eq!(turn_state.take_pending_controller_validation(), None);
+    }
+
+    #[test]
+    fn terminal_controller_validation_result_round_trips() {
+        let mut turn_state = TurnState::default();
+        assert!(!turn_state.has_terminal_controller_validation_result());
+
+        turn_state.set_terminal_controller_validation_result("All checks passed.".to_string());
+        assert!(turn_state.has_terminal_controller_validation_result());
+        assert_eq!(
+            turn_state.take_terminal_controller_validation_result(),
+            Some("All checks passed.".to_string())
+        );
+        assert_eq!(
+            turn_state.take_terminal_controller_validation_result(),
+            None
+        );
     }
 }

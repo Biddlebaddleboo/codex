@@ -56,8 +56,8 @@ pub use shell_handler::ShellHandler;
 /// Timeout for controller validation commands. Build/test commands can
 /// legitimately take longer than the default shell tool timeout (10 s).
 /// A five-minute ceiling keeps validation bounded without timing out
-/// reasonable builds. Controller validation runs in `on_task_finished`
-/// after the model task is removed, so no clean task cancellation token
+/// reasonable builds. Controller validation runs after model passes in
+/// same regular-turn task lifecycle, and no clean task cancellation token
 /// is available at this call site; timeout is the cancellation bound.
 const CONTROLLER_VALIDATION_TIMEOUT_MS: u64 = 5 * 60 * 1000; // 5 minutes
 

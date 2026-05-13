@@ -3067,6 +3067,21 @@ impl Session {
         turn_state.lock().await.take_pending_controller_validation()
     }
 
+    pub(crate) async fn set_terminal_controller_validation_result(
+        &self,
+        sub_id: &str,
+        result: String,
+    ) {
+        let turn_state = self.turn_state_for_sub_id(sub_id).await;
+        let Some(turn_state) = turn_state else {
+            return;
+        };
+        turn_state
+            .lock()
+            .await
+            .set_terminal_controller_validation_result(result);
+    }
+
     async fn turn_state_for_sub_id(
         &self,
         sub_id: &str,
