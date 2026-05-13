@@ -29,6 +29,7 @@ const MAX_CONTROLLER_VALIDATION_REPAIR_ATTEMPTS: u8 = 2;
 enum ControllerValidationAction {
     Retry {
         validation: ControllerValidationState,
+        failure_summary: String,
         repair_prompt: String,
     },
     Terminal {
@@ -60,6 +61,7 @@ fn next_controller_validation_action(
                 validation.failed_command_first(&failed_command);
                 return ControllerValidationAction::Retry {
                     validation,
+                    failure_summary: message.clone(),
                     repair_prompt: build_validation_repair_prompt(&message),
                 };
             }
@@ -131,6 +133,7 @@ impl SessionTask for RegularTask {
                     // `start_task(...)` or emit extra TurnStarted/TurnComplete.
                     ControllerValidationAction::Retry {
                         validation,
+                        failure_summary,
                         repair_prompt,
                     } => {
                         sess.set_pending_controller_validation(&ctx.sub_id, validation)
@@ -150,7 +153,22 @@ impl SessionTask for RegularTask {
                                 count = items.len(),
                                 "failed to inject controller validation repair prompt; finalize terminal failure"
                             );
-                            let failure_message = "Validation failed to queue same-turn repair prompt. Aborting controller validation retries.".to_string();
+                            let failure_message = format!(
+                                "{failure_summary}\n\nRepair prompt handoff failed: queued retry input was rejected for active turn."
+                            );
+                            sess.set_terminal_controller_validation_result(
+                                &ctx.sub_id,
+                                failure_message,
+                            )
+                            .await;
+                            return None;
+                        }
+                        // Wake next same-turn model pass from pending-input path
+                        // in `run_turn(...)` without new turn lifecycle events.
+                        if !sess.has_pending_input().await {
+                            let failure_message = format!(
+                                "{failure_summary}\n\nRepair prompt handoff failed: retry input was not pending for model consumption."
+                            );
                             sess.set_terminal_controller_validation_result(
                                 &ctx.sub_id,
                                 failure_message,
@@ -199,6 +217,7 @@ mod tests {
         let action = next_controller_validation_action(state, run_result);
         let ControllerValidationAction::Retry {
             validation,
+            failure_summary,
             repair_prompt,
         } = action
         else {
@@ -209,6 +228,7 @@ mod tests {
             validation.commands(),
             &["c2".to_string(), "c1".to_string(), "c3".to_string()]
         );
+        assert_eq!(failure_summary, "fail".to_string());
         assert_eq!(repair_prompt, build_validation_repair_prompt("fail"));
     }
 

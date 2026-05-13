@@ -7365,6 +7365,74 @@ async fn task_finish_with_terminal_controller_validation_result_uses_controller_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_finish_with_terminal_controller_validation_failure_emits_visible_message_and_turn_complete_last_agent_message()
+ {
+    let (sess, tc, rx) = make_session_and_context_with_rx().await;
+    let input = vec![UserInput::Text {
+        text: "hello".to_string(),
+        text_elements: Vec::new(),
+    }];
+    sess.spawn_task(
+        Arc::clone(&tc),
+        input,
+        NeverEndingTask {
+            kind: TaskKind::Regular,
+            listen_to_cancellation_token: false,
+        },
+    )
+    .await;
+
+    while rx.try_recv().is_ok() {}
+
+    let validation_failure =
+        "Validation failed for command: `cargo test -p codex-core`\nExit code: 7\nOutput:\nboom"
+            .to_string();
+    sess.set_terminal_controller_validation_result(&tc.sub_id, validation_failure.clone())
+        .await;
+
+    sess.on_task_finished(Arc::clone(&tc), Some("model output".to_string()))
+        .await;
+
+    let mut saw_visible_validation_message = false;
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let event = rx.recv().await.expect("channel open");
+            if let EventMsg::ItemCompleted(ItemCompletedEvent {
+                item: TurnItem::AgentMessage(agent_message),
+                ..
+            }) = &event.msg
+            {
+                let text = agent_message
+                    .content
+                    .iter()
+                    .map(|content| match content {
+                        codex_protocol::items::AgentMessageContent::Text { text } => text.as_str(),
+                    })
+                    .collect::<String>();
+                if text == validation_failure {
+                    saw_visible_validation_message = true;
+                }
+            }
+            if matches!(event.msg, EventMsg::TurnComplete(_)) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("expected turn complete event");
+    assert!(saw_visible_validation_message);
+    assert!(matches!(
+        event.msg,
+        EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id,
+            last_agent_message: Some(ref message),
+            time_to_first_token_ms: None,
+            ..
+        }) if turn_id == tc.sub_id && message == &validation_failure
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn task_finish_with_pending_controller_validation_without_terminal_result_skips_turn_complete()
  {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
@@ -7400,6 +7468,49 @@ async fn task_finish_with_pending_controller_validation_without_terminal_result_
     assert!(
         maybe_event.is_err(),
         "pending validation without terminal result should not emit TurnComplete"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_turn_with_empty_input_consumes_injected_pending_input() {
+    let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+    let injected_item = ResponseInputItem::Message {
+        role: "developer".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "Fix this validation failure only.".to_string(),
+        }],
+        phase: None,
+    };
+    {
+        let mut active = session.active_turn.lock().await;
+        active.get_or_insert_with(ActiveTurn::default);
+    }
+    session
+        .inject_response_items(vec![injected_item.clone()])
+        .await
+        .expect("inject pending input into active turn");
+    assert!(session.has_pending_input().await);
+
+    let cancellation_token = CancellationToken::new();
+    cancellation_token.cancel();
+    let _ = crate::session::turn::run_turn(
+        Arc::clone(&session),
+        Arc::clone(&turn_context),
+        Vec::new(),
+        None,
+        cancellation_token,
+    )
+    .await;
+
+    let expected = ResponseItem::from(injected_item);
+    let history = session.clone_history().await;
+    assert!(
+        history.raw_items().iter().any(|item| item == &expected),
+        "pending injected input should be consumed into history by run_turn with empty input"
+    );
+    assert!(
+        !session.has_pending_input().await,
+        "pending injected input should be drained"
     );
 }
 
